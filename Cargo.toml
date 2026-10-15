@@ -21,3 +21,7 @@ sha2 = "0.10"
 opt-level = "s"
 lto = true
 codegen-units = 1
+
+# The Worker, and the maintainer's offline tool for trust metadata (host only).
+[workspace]
+members = [".", "tools/trust"]
