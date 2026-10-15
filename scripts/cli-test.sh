@@ -9,6 +9,8 @@
 # logged out.
 set -u
 cd "$(dirname "$0")/.."
+REGDIR=$(pwd)
+admin() { (cd "$REGDIR" && node scripts/admin.mjs "$@" > /dev/null); }
 GODSPEED=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 : "${GODSPEED_OS:?set GODSPEED_OS to a GodspeedOS checkout}"
 PORT=${PORT:-8788}
@@ -56,14 +58,29 @@ check 18 "not one the registry issued" "a token the registry never issued is ref
 check 0 "Logged in to $URL as alice" "login with the issued token" -- \
   sh -c "echo '$TOKEN' | '$GODSPEED' login --registry '$URL'"
 check 0 "may publish under: alice/" "whoami names the account and its namespaces" -- "$GODSPEED" whoami
-check 0 "Published alice/greeter@0.1.0" "publish builds, packages, uploads and finalises" -- "$GODSPEED" publish
+
+# Signing: no key, then a key the registry does not know, then a registered one.
+check 11 "You have no signing key" "publishing without a signing key is refused, before building" -- "$GODSPEED" publish
+check 0 "Generated a signing key" "key generate makes a key and prints only the public half" -- "$GODSPEED" key generate
+check 24 "already exists" "key generate never replaces an existing key" -- "$GODSPEED" key generate
+KEY=$("$GODSPEED" key show 2> /dev/null)
+check 23 "is not registered for signing under alice/" "a release signed by an unregistered key is refused" -- "$GODSPEED" publish
+admin add-key alice "$KEY"
+check 0 "Published alice/greeter@0.1.0" "once the key is registered, publish resumes the same upload and finalises" -- "$GODSPEED" publish
 check 0 "already published, with this exact manifest" "publishing the same thing again is a success, not a conflict" -- "$GODSPEED" publish
 
 mkdir -p "$WORK/download"
-for f in manifest.toml contract.toml x86_64.elf aarch64.elf armv7.elf riscv64.elf; do
+for f in manifest.toml manifest.sig contract.toml x86_64.elf aarch64.elf armv7.elf riscv64.elf; do
   curl -s -o "$WORK/download/$f" "$URL/packages/alice/greeter/0.1.0/$f"
 done
-check 0 "Verified alice/greeter 0.1.0" "the published package, downloaded, passes godspeed verify" -- "$GODSPEED" verify "$WORK/download"
+check 0 "signed by $KEY" "the published package, downloaded, verifies, signed by the registered key" -- "$GODSPEED" verify "$WORK/download"
+
+# A revoked key signs nothing new; what it already signed stays published.
+admin revoke-key alice "$KEY"
+sed -i 's/^version = "0.1.0"/version = "0.1.1"/' Cargo.toml "contracts/greeter.toml"
+check 23 "is not registered for signing under alice/" "after its key is revoked, a new release is refused" -- "$GODSPEED" publish
+check 0 "Verified alice/greeter 0.1.0" "what the revoked key signed before stays downloadable and verifiable" -- "$GODSPEED" verify "$WORK/download"
+sed -i 's/^version = "0.1.1"/version = "0.1.0"/' Cargo.toml "contracts/greeter.toml"
 
 sed -i 's/^description = .*/description = "changed after publishing"/' godspeed.toml
 check 24 "Published versions never change" "a different package under a published version is refused" -- "$GODSPEED" publish

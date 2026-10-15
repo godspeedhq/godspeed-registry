@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// Registry administration, phase 1: approve publishers and issue tokens by hand.
+// Registry administration, phase 1: approve publishers, issue tokens and register signing keys by hand.
 //
 //   node scripts/admin.mjs add-publisher <publisher> <account>   [--remote]
 //   node scripts/admin.mjs issue-token   <account> [--days 90]   [--remote]
 //   node scripts/admin.mjs revoke-tokens <account>               [--remote]
+//   node scripts/admin.mjs add-key       <publisher> <ed25519:...> [--remote]
+//   node scripts/admin.mjs revoke-key    <publisher> <ed25519:...> [--remote]
 //   node scripts/admin.mjs list                                  [--remote]
 //
 // Run `npm install` first (it pins wrangler). Without --remote it acts on the local development database
-// that `wrangler dev` uses. A token is printed
-// once and never stored: the database keeps only its SHA-256.
+// that `wrangler dev` uses. A token is printed once and never stored: the database keeps only its SHA-256.
+// A signing key is the PUBLIC key a publisher sends (`godspeed key show`); never accept a key file.
 
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -33,6 +35,13 @@ function fail(message) {
 
 function name(value, what) {
   if (!value || !NAME.test(value)) fail(`${what} "${value ?? ""}" must be a lowercase letter, then letters, digits and '-'`);
+  return value; // safe to interpolate: the pattern admits no quote or SQL syntax
+}
+
+const KEY = /^ed25519:[0-9a-f]{64}$/; // the package contract's spelling of a public key
+
+function key(value) {
+  if (!value || !KEY.test(value)) fail(`"${value ?? ""}" is not a public key: expected ed25519: and 64 lowercase hex digits (from \`godspeed key show\`)`);
   return value; // safe to interpolate: the pattern admits no quote or SQL syntax
 }
 
@@ -92,6 +101,24 @@ switch (command) {
     console.log(`Every token of ${account} is revoked.`);
     break;
   }
+  case "add-key": {
+    const publisher = name(rest[0], "publisher");
+    const k = key(rest[1]);
+    const found = sql(`SELECT name FROM publishers WHERE name = '${publisher}'`)[0].results;
+    if (found.length === 0) fail(`no publisher ${publisher}; add it with add-publisher first`);
+    sql(`INSERT OR IGNORE INTO signing_keys (publisher, key, added) VALUES ('${publisher}', '${k}', '${now}')`);
+    const live = sql(`SELECT revoked FROM signing_keys WHERE publisher = '${publisher}' AND key = '${k}'`)[0].results[0];
+    if (live.revoked) fail(`that key was revoked for ${publisher}/ at ${live.revoked}; a revoked key is never re-registered - ask for a new one`);
+    console.log(`${k} may now sign releases under ${publisher}/`);
+    break;
+  }
+  case "revoke-key": {
+    const publisher = name(rest[0], "publisher");
+    const k = key(rest[1]);
+    sql(`UPDATE signing_keys SET revoked = '${now}' WHERE publisher = '${publisher}' AND key = '${k}' AND revoked IS NULL`);
+    console.log(`${k} can no longer sign releases under ${publisher}/. Releases it already signed stay published.`);
+    break;
+  }
   case "list": {
     const rows = sql(
       "SELECT m.publisher, m.account, COUNT(t.hash) AS live_tokens FROM members m " +
@@ -100,8 +127,13 @@ switch (command) {
     )[0].results;
     for (const r of rows) console.log(`${r.publisher}/  ${r.account}  (${r.live_tokens} live token(s))`);
     if (rows.length === 0) console.log("No publishers yet.");
+    const keys = sql("SELECT publisher, key, added, revoked FROM signing_keys ORDER BY publisher, added")[0].results;
+    for (const k of keys) console.log(`${k.publisher}/  key ${k.key}  ${k.revoked ? "revoked " + k.revoked : "since " + k.added}`);
     break;
   }
   default:
-    fail("commands: add-publisher <publisher> <account> | issue-token <account> [--days N] | revoke-tokens <account> | list");
+    fail(
+      "commands: add-publisher <publisher> <account> | issue-token <account> [--days N] | revoke-tokens <account> | " +
+        "add-key <publisher> <key> | revoke-key <publisher> <key> | list",
+    );
 }

@@ -82,7 +82,11 @@ These hold after every change. A change that weakens one is wrong even if every 
    key is the maintainer, who uploaded it.
 6. **The database never holds a usable token.** Only SHA-256 hashes are stored. Tokens are printed once, at
    issue, and never logged.
-7. **A timed-out or failed request is not proof of anything.** A storage or runtime error is reported as
+7. **Every release is signed by a key registered, and not revoked, for its namespace.** `manifest.sig` is a
+   required file; it must verify over the reserved manifest's exact bytes, and its key must be in
+   `signing_keys` for the publisher, unrevoked - checked when it is uploaded and again at finalisation. A
+   revoked key signs nothing new; nothing already published is ever altered by a revocation.
+8. **A timed-out or failed request is not proof of anything.** A storage or runtime error is reported as
    `registry-unavailable`, which the CLI must treat as an unknown outcome and reconcile by reading the index.
    Never report success before it is established, and never report a refusal for something that may have
    happened.
@@ -96,7 +100,7 @@ Keep these five apart, in code, in errors and in documentation:
 | concern | established by |
 |---|---|
 | content integrity | digests in the manifest, checked by `godspeed-package` |
-| publisher identity | signatures (not built yet) |
+| publisher identity | publisher signatures (`manifest.sig`); key-to-namespace binding is the registry's own record until the trust anchor (below) |
 | registry authorisation | tokens and namespace membership (D1) |
 | local capability grants | the operating system, never the registry |
 | software safety | nobody: a verified package is not a safe package |
@@ -126,14 +130,19 @@ about which key signed a release.
 
 ---
 
-## Trust Model (Not Built Yet)
+## Trust Model (Half Built)
 
 The registry follows The Update Framework's roles (root, delegated targets, snapshot, timestamp), as the
-design's section 6 describes. Until signing exists:
+design's section 6 describes.
 
-- packages published here are integrity-checked but not attributable to a key;
-- **the first public publish waits for signing**;
-- nothing in the API, the docs or a response may imply that a package is signed or trusted.
+- **Built (slice 1):** every release is signed by its publisher, with a key registered for the namespace
+  (invariant 7).
+- **Not built (slice 2): the trust anchor.** Which key belongs to which namespace lives in this registry's
+  own database, so a compromised registry could register a key of its own and sign in someone's name.
+  Root metadata - each namespace's keys, signed offline by the root keys, which this Worker never holds -
+  closes that; snapshot and timestamp metadata, signed online, add freshness and stop rollback.
+- **The first public publish waits for slice 2.** Until then nothing in the API, the docs or a response may
+  imply that a client can establish a publisher's identity on its own.
 
 Implement the roles directly from the TUF specification, scoped to what the design needs, so that the
 native package manager can verify without a heap. Do not adopt a TUF library that cannot run `no_std`.

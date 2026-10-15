@@ -41,6 +41,8 @@ codes! {
     file_not_in_manifest    => 400, "file-not-in-manifest";
     size_mismatch           => 422, "size-mismatch";
     digest_mismatch         => 422, "digest-mismatch";
+    signature_invalid       => 422, "signature-invalid";
+    key_not_registered      => 403, "key-not-registered";
     conflict                => 409, "published-differently";
     unavailable             => 503, "registry-unavailable";
 }

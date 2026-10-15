@@ -2,17 +2,18 @@
 # End-to-end test of the publishing protocol against a running registry - `wrangler dev` locally, never
 # production. Publishes one real package and checks every refusal along the way.
 #
-#   REGISTRY=http://127.0.0.1:8787 ALICE_TOKEN=gsp_... BOB_TOKEN=gsp_... \
-#     scripts/smoke.sh <package-dir> [path-to-godspeed-cli-binary]
+#   REGISTRY=http://127.0.0.1:8787 ALICE_TOKEN=gsp_... BOB_TOKEN=gsp_... ROGUE_CONFIG=<dir> \
+#     scripts/smoke.sh <package-dir> <path-to-godspeed-cli-binary>
 #
-# <package-dir> is what `godspeed package` wrote for alice/<name>, at a version not yet published. With the
-# CLI binary, the downloaded package is also checked with `godspeed verify`. BOB_TOKEN is revoked at the end.
+# <package-dir> is a package for alice/<name>, at a version not yet published, SIGNED by a key registered for
+# alice/. ROGUE_CONFIG is a godspeed configuration directory holding a signing key that is NOT registered.
+# The downloaded package is checked with `godspeed verify`. BOB_TOKEN is revoked at the end.
 set -u
 
 REGISTRY=${REGISTRY:-http://127.0.0.1:8787}
-PKG=${1:?usage: smoke.sh <package-dir> [godspeed-binary]}
-GODSPEED=${2:-}
-: "${ALICE_TOKEN:?set ALICE_TOKEN}" "${BOB_TOKEN:?set BOB_TOKEN}"
+PKG=${1:?usage: smoke.sh <package-dir> <godspeed-binary>}
+GODSPEED=${2:?usage: smoke.sh <package-dir> <godspeed-binary>}
+: "${ALICE_TOKEN:?set ALICE_TOKEN}" "${BOB_TOKEN:?set BOB_TOKEN}" "${ROGUE_CONFIG:?set ROGUE_CONFIG}"
 
 pass=0
 fail=0
@@ -95,6 +96,19 @@ call PUT "$UP/$FIRST_ELF" "$ALICE_TOKEN" --data-binary "@$WORK/short.elf"
 expect 422 size-mismatch "a truncated binary is refused"
 call PUT "$UP/$FIRST_ELF" "$BOB_TOKEN" --data-binary "@$PKG/$FIRST_ELF"
 expect 403 namespace-not-yours "bob cannot upload into alice's reservation"
+
+# Signatures: a valid signature by a key nobody registered, and a registered key's signature with one byte
+# changed, are both refused before anything is staged.
+cp -r "$PKG" "$WORK/rogue"
+rm -f "$WORK/rogue/manifest.sig"
+GODSPEED_CONFIG_DIR="$ROGUE_CONFIG" "$GODSPEED" sign "$WORK/rogue" > /dev/null
+call PUT "$UP/manifest.sig" "$ALICE_TOKEN" --data-binary "@$WORK/rogue/manifest.sig"
+expect 403 key-not-registered "a release signed by an unregistered key is refused"
+# Flip the last hex digit of the signature: still well formed, no longer valid.
+sed '3s/\(.\)"$/\1X"/; 3s/0X"/1"/; 3s/\([1-9a-f]\)X"/0"/' "$PKG/manifest.sig" > "$WORK/bad.sig"
+if cmp -s "$WORK/bad.sig" "$PKG/manifest.sig"; then echo "FAIL  could not alter the signature for the test"; fail=$((fail + 1)); fi
+call PUT "$UP/manifest.sig" "$ALICE_TOKEN" --data-binary "@$WORK/bad.sig"
+expect 422 signature-invalid "an altered signature is refused"
 
 for f in $FILES; do
   call PUT "$UP/$f" "$ALICE_TOKEN" --data-binary "@$PKG/$f"

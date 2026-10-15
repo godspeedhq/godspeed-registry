@@ -91,6 +91,21 @@ pub async fn may_publish(db: &D1Database, account: &str, publisher: &str) -> wor
     Ok(row.is_some())
 }
 
+/// Is `key` registered, and not revoked, for signing releases under `publisher`?
+pub async fn key_registered(db: &D1Database, publisher: &str, key: &str) -> worker::Result<bool> {
+    #[derive(Deserialize)]
+    struct One {
+        #[allow(dead_code)]
+        one: i64,
+    }
+    let row: Option<One> = db
+        .prepare("SELECT 1 AS one FROM signing_keys WHERE publisher = ?1 AND key = ?2 AND revoked IS NULL")
+        .bind(&[publisher.into(), key.into()])?
+        .first(None)
+        .await?;
+    Ok(row.is_some())
+}
+
 /// The namespaces `account` may publish under.
 pub async fn namespaces(db: &D1Database, account: &str) -> worker::Result<Vec<String>> {
     #[derive(Deserialize)]

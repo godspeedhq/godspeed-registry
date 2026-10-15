@@ -4,8 +4,10 @@ The publishing API of the Godspeed package registry: a Cloudflare Worker in fron
 the reasons for each part of it - is `docs/publishing-design.md` in
 [godspeed-cli](https://github.com/godspeedhq/godspeed-cli).
 
-**Status: works end to end locally. Not deployed.** The first public publish waits for signing (the
-design's step 4): until then, anything published here is integrity-checked but not attributable to a key.
+**Status: works end to end locally, publisher signatures included. Not deployed.** The first public
+publish waits for the trust anchor (signed root and index metadata - the design's section 6, slice 2):
+until then, which key belongs to a publisher is this registry's own record, which clients cannot check
+independently.
 
 ## What it does
 
@@ -21,6 +23,8 @@ design's step 4): until then, anything published here is integrity-checked but n
 - **No one holds storage credentials.** The Worker holds the bucket bindings; publishers hold a token.
 - **Every byte is verified** with `godspeed-package`, the same crate the CLI and the native package manager
   use: the manifest on reservation, each file as it is uploaded, and every file again at finalisation.
+- **Every release is signed** (`manifest.sig`) by a key the maintainer registered for its namespace and has
+  not revoked; checked on upload and again at finalisation, and published beside the manifest.
 - **Uploads in progress** live under `staging/` in the same bucket for now, at random, unlisted, unindexed
   keys swept within a day; they move to a private bucket before anyone else can publish.
 - **One Durable Object per package** serialises reservation and finalisation, so two publishes of one
@@ -38,10 +42,10 @@ development.
 
     src/lib.rs        routes, authentication and authorisation, upload checks, the read routes
     src/object.rs     the per-package Durable Object: reserve, stage, finalise
-    src/auth.rs       tokens (stored as SHA-256 only) and namespace membership, in D1
+    src/auth.rs       tokens (stored as SHA-256 only), namespace membership and signing keys, in D1
     src/keys.rs       where everything lives in the buckets
     migrations/       the D1 schema
-    scripts/admin.mjs add publishers, issue and revoke tokens (phase 1: by hand)
+    scripts/admin.mjs add publishers, issue and revoke tokens, register and revoke signing keys (by hand)
     scripts/smoke.sh  the protocol end to end against a running registry
     scripts/local-test.sh   all of it from nothing, locally
     scripts/cli-test.sh     the real `godspeed` CLI logging in and publishing to it, locally
@@ -54,18 +58,20 @@ branch.
 
     npm install          # pins wrangler; approves only esbuild's and workerd's install scripts
     rustup target add wasm32-unknown-unknown
-    scripts/local-test.sh <package-dir> [path/to/godspeed]
+    scripts/local-test.sh <package-dir> path/to/godspeed
 
 `<package-dir>` is what `godspeed package` wrote for `alice/<name>`. The test wipes `.wrangler/state`,
-creates publishers `alice` and `bob` with fresh tokens, starts `wrangler dev` (every binding local), and
-runs `scripts/smoke.sh`: 26 checks, from refused tokens to a concurrent reservation race, ending with the
-downloaded package passing `godspeed verify`. Nothing reaches Cloudflare.
+creates publishers `alice` and `bob` with fresh tokens, a signing key registered for alice and a rogue one
+registered for nobody, signs a copy of the package, starts `wrangler dev` (every binding local), and runs
+`scripts/smoke.sh`: 30 checks, from refused tokens and signatures to a concurrent reservation race, ending
+with the downloaded package passing `godspeed verify`. Nothing reaches Cloudflare.
 
     GODSPEED_OS=<GodspeedOS checkout> scripts/cli-test.sh path/to/godspeed
 
-drives the developer's side instead: `godspeed login`, `whoami`, `publish` (twice - the second must report
-the identical release as already published), a refused republish under a published version, a refused
-foreign namespace, and `logout`. 11 checks.
+drives the developer's side instead: `login`, `whoami`, `key generate`, a publish refused for having no key
+and then for an unregistered one, a publish that resumes once the key is registered, a second publish that
+must report the identical release as already published, a refused release after the key is revoked, a
+refused republish, a refused foreign namespace, and `logout`. 17 checks.
 
 ## Deploying (maintainer)
 
@@ -80,5 +86,7 @@ Not done yet. In order:
 5. `node scripts/admin.mjs add-publisher <publisher> <account> --remote`, then
    `node scripts/admin.mjs issue-token <account> --remote`, and hand the token over privately. It is
    printed once; the registry keeps only its hash.
-6. Point the public bucket's custom domain at it for reads. The r2.dev URL is for development only: it is
+6. Register the publisher's signing key: they run `godspeed key generate` and send you the public key it
+   prints (never a file); `node scripts/admin.mjs add-key <publisher> <ed25519:...> --remote`.
+7. Point the public bucket's custom domain at it for reads. The r2.dev URL is for development only: it is
    rate-limited and uncached.

@@ -1,7 +1,7 @@
 //! Where things live in the buckets. The layout is `docs/publishing-design.md` section 2 in the CLI
 //! repository; this is the one place it is spelled.
 
-use godspeed_package::{Arch, PackageName, Version, CONTRACT_FILE};
+use godspeed_package::{Arch, PackageName, Version, CONTRACT_FILE, SIGNATURE_FILE};
 
 /// The manifest's file name in a package and in storage.
 pub const MANIFEST_FILE: &str = "manifest.toml";
@@ -30,7 +30,7 @@ pub fn staged(name: &PackageName<'_>, version: Version, upload: &str, file: &str
 /// Every file a package may contain other than its manifest, which is never uploaded separately: it
 /// arrives with the reservation. A request naming anything else is refused before any bytes are read.
 pub fn is_package_file(file: &str) -> bool {
-    file == CONTRACT_FILE || Arch::ALL.iter().any(|a| a.artifact_file() == file)
+    file == CONTRACT_FILE || file == SIGNATURE_FILE || Arch::ALL.iter().any(|a| a.artifact_file() == file)
 }
 
 #[cfg(test)]
@@ -53,6 +53,7 @@ mod tests {
     fn only_package_files_are_accepted() {
         assert!(is_package_file("contract.toml"));
         assert!(is_package_file("riscv64.elf"));
+        assert!(is_package_file("manifest.sig"));
         for bad in [
             "manifest.toml",
             "../index/alice/hello.toml",

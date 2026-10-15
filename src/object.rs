@@ -64,11 +64,13 @@ pub struct Reservation {
 }
 
 impl Reservation {
-    /// The files the manifest says the package contains, other than the manifest itself.
+    /// The files a release must upload: the contract, the publisher's signature, and the binaries the
+    /// manifest names. (The manifest itself arrives with the reservation.)
     pub fn files(&self) -> Vec<String> {
         let owned = pkg::parse(&self.manifest).expect("validated at reservation");
         let m = owned.manifest();
-        std::iter::once(pkg::CONTRACT_FILE.to_string())
+        [pkg::CONTRACT_FILE.to_string(), pkg::SIGNATURE_FILE.to_string()]
+            .into_iter()
             .chain(m.artifacts.iter().map(|a| a.arch.artifact_file().to_string()))
             .collect()
     }
@@ -101,8 +103,23 @@ pub struct Published {
     pub published: String,
 }
 
-/// Check that `bytes` are the file `file` that `manifest` names.
-pub fn check_file(manifest: &pkg::Manifest<'_>, file: &str, bytes: &[u8]) -> ApiResult<()> {
+/// Check that `bytes` are the file `file` that the manifest (`manifest_text`, parsed as `manifest`) names.
+/// For the signature, that means it verifies over the manifest's exact bytes; it returns the key that signed,
+/// which the caller must then find registered for the namespace.
+pub fn check_file(
+    manifest_text: &str,
+    manifest: &pkg::Manifest<'_>,
+    file: &str,
+    bytes: &[u8],
+) -> ApiResult<Option<pkg::PublicKey>> {
+    if file == pkg::SIGNATURE_FILE {
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| ApiError::signature_invalid(format!("{file} is not text")))?;
+        let sig = pkg::ManifestSignature::parse(text)
+            .and_then(|s| s.verify(manifest_text.as_bytes()).map(|()| s))
+            .map_err(|e| ApiError::signature_invalid(format!("{file}: {e}")))?;
+        return Ok(Some(sig.key));
+    }
     if file == pkg::CONTRACT_FILE {
         let actual = Sha256Digest::of(bytes);
         if actual != manifest.contract {
@@ -120,7 +137,7 @@ pub fn check_file(manifest: &pkg::Manifest<'_>, file: &str, bytes: &[u8]) -> Api
         let mut problems = Vec::new();
         manifest.validate_against_contract(&field("name"), &field("version"), |p| problems.push(p.to_string()));
         return if problems.is_empty() {
-            Ok(())
+            Ok(None)
         } else {
             Err(ApiError::manifest_invalid(problems.join("; ")))
         };
@@ -130,10 +147,20 @@ pub fn check_file(manifest: &pkg::Manifest<'_>, file: &str, bytes: &[u8]) -> Api
             "{file} is not a file this package's manifest names"
         )));
     };
-    ArtifactVerifier::verify(*artifact, bytes).map_err(|e| match e {
-        pkg::VerifyError::DigestMismatch { .. } => ApiError::digest_mismatch(format!("{file}: {e}")),
-        _ => ApiError::size_mismatch(format!("{file}: {e}")),
-    })
+    ArtifactVerifier::verify(*artifact, bytes)
+        .map(|()| None)
+        .map_err(|e| match e {
+            pkg::VerifyError::DigestMismatch { .. } => ApiError::digest_mismatch(format!("{file}: {e}")),
+            _ => ApiError::size_mismatch(format!("{file}: {e}")),
+        })
+}
+
+/// The refusal for a signature by a key not registered (or no longer registered) for `publisher`.
+pub fn unregistered(publisher: &str, key: &pkg::PublicKey) -> ApiError {
+    ApiError::key_not_registered(format!(
+        "{key} is not registered for signing under {publisher}/, or has been revoked. Releases under \
+         {publisher}/ must be signed by a key the registry maintainer registered."
+    ))
 }
 
 /// Look up a reservation for an upload, checking it is this account's, this upload's, and still open.
@@ -312,10 +339,17 @@ async fn finalise(storage: Storage, env: Env, r: UploadRef) -> Result<ApiResult<
             Some(b) => b.bytes().await?,
             None => Vec::new(),
         };
-        if let Err(e) = check_file(&manifest, &file, &bytes) {
-            return Ok(Err(e));
+        match check_file(&res.manifest, &manifest, &file, &bytes) {
+            Err(e) => return Ok(Err(e)),
+            // Checked again here, not only at upload: the key may have been revoked in between.
+            Ok(Some(key)) => {
+                if !crate::auth::key_registered(&env.d1("DB")?, name.publisher(), &key.to_string()).await? {
+                    return Ok(Err(unregistered(name.publisher(), &key)));
+                }
+            }
+            Ok(None) => {}
         }
-        let content_type = if file.ends_with(".toml") {
+        let content_type = if file.ends_with(".toml") || file.ends_with(".sig") {
             "application/toml"
         } else {
             "application/octet-stream"

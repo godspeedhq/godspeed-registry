@@ -223,8 +223,14 @@ async fn upload(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
         }
     }
     let bytes = req.bytes().await?;
-    if let Err(e) = object::check_file(&manifest, &file, &bytes) {
-        return e.into_response();
+    match object::check_file(&res.manifest, &manifest, &file, &bytes) {
+        Err(e) => return e.into_response(),
+        Ok(Some(key)) => {
+            if !auth::key_registered(&ctx.env.d1("DB")?, name.publisher(), &key.to_string()).await? {
+                return object::unregistered(name.publisher(), &key).into_response();
+            }
+        }
+        Ok(None) => {}
     }
     ctx.env
         .bucket("PACKAGES")?
