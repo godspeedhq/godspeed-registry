@@ -37,10 +37,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Make a new offline key in FILE (never overwrites). Keep it offline; back it up.
-    Keygen { file: PathBuf },
-    /// Print the public key of the key in FILE.
-    Pubkey { file: PathBuf },
+    /// Make a new offline key: into FILE (never overwrites), or with --print shown once to paste into a
+    /// password manager, and written nowhere.
+    Keygen {
+        file: Option<PathBuf>,
+        /// Show the key to copy into a password manager instead of writing a file
+        #[arg(long, conflicts_with = "file")]
+        print: bool,
+    },
+    /// Print the public key of a key: in FILE, or pasted (--stdin).
+    Pubkey {
+        file: Option<PathBuf>,
+        /// Read the key from a hidden prompt (or piped standard input) instead of a file
+        #[arg(long, conflicts_with = "file")]
+        stdin: bool,
+    },
     /// Write the next root version, unsigned: <dir>/root/<n>.toml.
     Root {
         #[arg(long, default_value = "trust")]
@@ -62,11 +73,16 @@ enum Command {
         #[command(subcommand)]
         action: NamespaceAction,
     },
-    /// Sign DOCUMENT with each --key, keeping any existing signatures that still verify.
+    /// Sign DOCUMENT with each --key (and --key-stdin), keeping any existing signatures that still verify.
     Sign {
         document: PathBuf,
-        #[arg(long = "key", required = true)]
+        /// A key file
+        #[arg(long = "key")]
         keys: Vec<PathBuf>,
+        /// Also sign with a key pasted at a hidden prompt (or piped): it never touches the disk. To sign with
+        /// several pasted keys, run `sign` once per key - signatures accumulate.
+        #[arg(long)]
+        key_stdin: bool,
     },
     /// Check every root in the chain and the namespaces document, as a client would.
     Verify {
@@ -167,30 +183,56 @@ fn decode_seed(hex: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-/// Read a key file: the same format `godspeed key generate` writes, so either tool's keys work.
-fn load_key(path: &Path) -> Result<[u8; 32]> {
-    let text = read(path)?;
+/// Read a key from text: a whole key file (the format `godspeed key generate` also writes, so either tool's
+/// keys work), just its `secret = "..."` line, or the 64 hex digits alone - whatever was pasted. `what` names
+/// where it came from, for errors.
+fn parse_key(text: &str, what: &str) -> Result<[u8; 32]> {
     let field = |name: &str| {
         text.lines().find_map(|l| {
-            l.strip_prefix(name)
+            l.trim()
+                .strip_prefix(name)
                 .and_then(|r| r.strip_prefix(" = \""))
                 .and_then(|r| r.strip_suffix('"'))
         })
     };
     let seed = field("secret")
+        .or_else(|| Some(text.trim()))
         .and_then(decode_seed)
-        .ok_or(format!("{} holds no valid key", path.display()))?;
+        .ok_or(format!(
+            "{what} holds no valid key (expected the key text, or its 64 hex digits)"
+        ))?;
     let public = godspeed_package::ManifestSignature::public_key(&seed).to_string();
-    if field("public") != Some(public.as_str()) {
-        return Err(format!(
-            "{}: the public key does not match the secret one",
-            path.display()
-        ));
+    if let Some(stated) = field("public") {
+        if stated != public {
+            return Err(format!("{what}: the public key does not match the secret one"));
+        }
     }
     Ok(seed)
 }
 
-fn keygen(file: &Path) -> Result<()> {
+fn load_key(path: &Path) -> Result<[u8; 32]> {
+    parse_key(&read(path)?, &path.display().to_string())
+}
+
+/// A key pasted at a hidden prompt, or piped in. It is held in memory only.
+fn stdin_key() -> Result<[u8; 32]> {
+    use std::io::{IsTerminal, Read};
+    let text = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password("Paste the key's secret (64 hex digits; input hidden), then Enter: ")
+            .map_err(|e| format!("could not read the key: {e}"))?
+    } else {
+        let mut t = String::new();
+        std::io::stdin()
+            .read_to_string(&mut t)
+            .map_err(|e| format!("could not read the key: {e}"))?;
+        t
+    };
+    let seed = parse_key(&text, "the pasted key")?;
+    eprintln!("Using {}", godspeed_package::ManifestSignature::public_key(&seed));
+    Ok(seed)
+}
+
+fn keygen(file: Option<&Path>, print: bool) -> Result<()> {
     let mut seed = [0u8; 32];
     getrandom::getrandom(&mut seed).map_err(|e| format!("the random number source failed: {e}"))?;
     let public = godspeed_package::ManifestSignature::public_key(&seed);
@@ -200,6 +242,16 @@ fn keygen(file: &Path) -> Result<()> {
          # Keep it off the registry and off any networked machine you can avoid; back it up.\n\
          format = 1\npublic = \"{public}\"\nsecret = \"{secret}\"\n"
     );
+    let file = match (file, print) {
+        (_, true) => {
+            println!("{text}");
+            eprintln!("Copy ALL of the above into a password-manager secure note now. It was written nowhere: this");
+            eprintln!("is the only copy. Then clear the terminal (`cls` on Windows, `clear` elsewhere).");
+            return Ok(());
+        }
+        (Some(f), false) => f,
+        (None, false) => return Err("give a FILE to write the key to, or --print".into()),
+    };
     let mut open = std::fs::OpenOptions::new();
     open.write(true).create_new(true);
     #[cfg(unix)]
@@ -361,7 +413,10 @@ fn edit_namespaces(dir: &Path, expires: Option<&str>, action: &NamespaceAction) 
 
 // ---- signing and verifying ---------------------------------------------------------------------------
 
-fn sign(document: &Path, key_files: &[PathBuf]) -> Result<()> {
+fn sign(document: &Path, key_files: &[PathBuf], key_stdin: bool) -> Result<()> {
+    if key_files.is_empty() && !key_stdin {
+        return Err("give --key <file> or --key-stdin".into());
+    }
     let text = read(document)?;
     let role = text
         .lines()
@@ -392,6 +447,10 @@ fn sign(document: &Path, key_files: &[PathBuf]) -> Result<()> {
     }
     for file in key_files {
         let seed = load_key(file)?;
+        sigs.push(trust::sign_metadata(role, text.as_bytes(), &seed));
+    }
+    if key_stdin {
+        let seed = stdin_key()?;
         sigs.push(trust::sign_metadata(role, text.as_bytes(), &seed));
     }
     let out = trust::write_signatures(&sigs);
@@ -469,13 +528,22 @@ fn verify(dir: &Path, now: Option<&str>) -> Result<()> {
 fn main() {
     let cli = Cli::parse();
     let result = match &cli.command {
-        Command::Keygen { file } => keygen(file),
-        Command::Pubkey { file } => {
-            load_key(file).map(|seed| println!("{}", godspeed_package::ManifestSignature::public_key(&seed)))
+        Command::Keygen { file, print } => keygen(file.as_deref(), *print),
+        Command::Pubkey { file, stdin } => {
+            let seed = match (file, stdin) {
+                (Some(f), false) => load_key(f),
+                (None, true) => stdin_key(),
+                _ => Err("give a key FILE, or --stdin".into()),
+            };
+            seed.map(|seed| println!("{}", godspeed_package::ManifestSignature::public_key(&seed)))
         }
         Command::Root { dir, expires, roles } => new_root(dir, expires, roles),
         Command::Namespaces { dir, expires, action } => edit_namespaces(dir, expires.as_deref(), action),
-        Command::Sign { document, keys } => sign(document, keys),
+        Command::Sign {
+            document,
+            keys,
+            key_stdin,
+        } => sign(document, keys, *key_stdin),
         Command::Verify { dir, now } => verify(dir, now.as_deref()),
     };
     if let Err(e) = result {

@@ -14,3 +14,5 @@ path = "src/main.rs"
 godspeed-package = { path = "../../../godspeed-cli/crates/godspeed-package", features = ["std"] }
 clap = { version = "4.5", features = ["derive"] }
 getrandom = "0.2"
+# Reads a pasted key without echoing it.
+rpassword = "7"
