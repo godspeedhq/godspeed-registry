@@ -1,0 +1,19 @@
+{
+  "name": "godspeed-registry",
+  "private": true,
+  "description": "Tooling for the Godspeed registry Worker: a pinned wrangler, and the admin script",
+  "license": "GPL-2.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "admin": "node scripts/admin.mjs",
+    "migrate:local": "wrangler d1 migrations apply godspeed-registry --local"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "workerd@1.20261012.1": true
+  }
+}

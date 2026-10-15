@@ -1,0 +1,35 @@
+name = "godspeed-registry"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-10-01"
+
+[build]
+# Exact version: `^` is an escape character to cmd.exe, and a pinned build tool is reproducible anyway.
+command = "cargo install -q worker-build@0.8.7 && worker-build --release"
+
+# Public: published packages and the index, served read-only by the bucket's own domain.
+[[r2_buckets]]
+binding = "PACKAGES"
+bucket_name = "godspeedos-packages"
+
+# PRIVATE: uploads in progress. It must never have a public domain or r2.dev URL - a public bucket serves
+# every key in it, and this one holds files nobody has verified as a whole package yet. Give it a lifecycle
+# rule deleting objects after 1 day, which sweeps abandoned uploads.
+[[r2_buckets]]
+binding = "STAGING"
+bucket_name = "godspeedos-staging"
+
+# Publishers, accounts, memberships and token hashes. Create with `npx wrangler d1 create godspeed-registry`
+# and put the id it prints here. Local development (`wrangler dev`) works with this placeholder.
+[[d1_databases]]
+binding = "DB"
+database_name = "godspeed-registry"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# One object per package: the authority on what is published and what is being published.
+[durable_objects]
+bindings = [{ name = "PACKAGE", class_name = "PackageObject" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PackageObject"]
