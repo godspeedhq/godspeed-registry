@@ -3,3 +3,5 @@
 /node_modules
 /.wrangler
 /.dev.vars
+# Offline and signing keys never belong in this repository: only their SIGNED output (trust/) does.
+*.key

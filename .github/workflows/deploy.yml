@@ -1,0 +1,109 @@
+name: deploy
+
+# Deploys the registry Worker to Cloudflare - from here, so no maintainer needs Node, npm or wrangler on their
+# own machine, and every deploy is recorded against the commit it deployed.
+#
+# Runs on a push to main (after CI's checks on the pull request), or by hand. It does nothing at all until
+# the repository variable REGISTRY_DEPLOY is set to `enabled`, so it cannot fail before Cloudflare is set up.
+#
+# Needs, in the repository's `production` environment:
+#   secrets   CLOUDFLARE_API_TOKEN   a token scoped to this account: Workers Scripts (edit), D1 (edit),
+#                                    Workers R2 Storage (edit)
+#             CLOUDFLARE_ACCOUNT_ID
+#             ONLINE_SIGNING_KEY     the online key's 64-hex-digit secret (godspeed-trust keygen). The ONLY key
+#                                    that belongs here: root and namespaces keys stay offline, always.
+#   variables REGISTRY_DEPLOY = enabled
+#             REGISTRY_URL    = the Worker's URL, for asking it to re-sign after trust metadata is uploaded
+# and wrangler.toml's database_id set to the real D1 database.
+#
+# It never SIGNS trust metadata: the maintainer signs root and namespaces offline and commits the signed files
+# under trust/; this only uploads them, after verifying them again.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['*.md', 'LICENSE', 'scripts/smoke.sh', 'scripts/local-test.sh', 'scripts/cli-test.sh']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancelled half way.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy the registry Worker
+    if: vars.REGISTRY_DEPLOY == 'enabled'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLI_REF: feat/cli-foundation # as in ci.yml
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: godspeed-registry
+      - uses: actions/checkout@v5
+        with:
+          repository: godspeedhq/godspeed-cli
+          ref: ${{ env.CLI_REF }}
+          path: godspeed-cli
+
+      - name: Refuse a placeholder database or missing secrets
+        working-directory: godspeed-registry
+        env:
+          ONLINE_SIGNING_KEY: ${{ secrets.ONLINE_SIGNING_KEY }}
+        run: |
+          if grep -q 'database_id = "00000000-0000-0000-0000-000000000000"' wrangler.toml; then
+            echo "::error::wrangler.toml still has the placeholder database_id. Create the D1 database in the Cloudflare dashboard (or wrangler d1 create) and put its id there."
+            exit 1
+          fi
+          for s in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID ONLINE_SIGNING_KEY; do
+            [ -n "${!s}" ] || { echo "::error::the $s secret is not set in the production environment"; exit 1; }
+          done
+          printf '%s' "$ONLINE_SIGNING_KEY" | grep -qE '^[0-9a-f]{64}$' \
+            || { echo "::error::ONLINE_SIGNING_KEY is not 64 lowercase hex digits (the secret of a godspeed-trust key)"; exit 1; }
+
+      - name: Install Rust (wasm32) and worker-build
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+          cargo install --locked -q worker-build@0.8.7
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install the pinned wrangler
+        working-directory: godspeed-registry
+        run: npm ci --no-fund --no-audit
+
+      - name: Apply database migrations
+        working-directory: godspeed-registry
+        run: node node_modules/wrangler/bin/wrangler.js d1 migrations apply godspeed-registry --remote
+
+      - name: Deploy
+        working-directory: godspeed-registry
+        run: node node_modules/wrangler/bin/wrangler.js deploy
+
+      - name: Set the online signing key
+        working-directory: godspeed-registry
+        env:
+          ONLINE_SIGNING_KEY: ${{ secrets.ONLINE_SIGNING_KEY }}
+        run: printf '%s' "$ONLINE_SIGNING_KEY" | node node_modules/wrangler/bin/wrangler.js secret put ONLINE_SIGNING_KEY
+
+      # The maintainer signs root and namespaces offline and commits the signed files under trust/; CI has
+      # already verified them. Here they are copied to the bucket, and the registry re-signs its snapshot.
+      - name: Upload the signed trust metadata
+        if: hashFiles('godspeed-registry/trust/root/1.toml') != ''
+        working-directory: godspeed-registry
+        env:
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
+        run: |
+          [ -n "$REGISTRY_URL" ] || { echo "::error::set the REGISTRY_URL repository variable (the Worker's URL)"; exit 1; }
+          cargo run --locked -q -p godspeed-trust -- verify --dir trust
+          node scripts/admin.mjs upload-trust trust --remote --registry "$REGISTRY_URL"

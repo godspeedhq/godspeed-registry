@@ -80,26 +80,41 @@ Nothing reaches Cloudflare.
 
 ## Deploying (maintainer)
 
-Not done yet. In order:
+Deploys run in GitHub Actions (`.github/workflows/deploy.yml`), so no maintainer needs Node or wrangler on
+their own machine: only Rust, for `godspeed-trust`. Not done yet. Once, in order:
 
 1. **Offline keys**, on a machine you trust and ideally keep offline:
-   `cargo run -p godspeed-trust -- keygen root-1.key` (and root-2, root-3, namespaces keys, and one online
-   key). Back each up; keep the root keys apart from one another.
+   `cargo run -p godspeed-trust -- keygen root-1.key` (and root-2, root-3, the namespaces keys, and one online
+   key). Back each up; keep the root keys apart from one another. `.gitignore` refuses `*.key`, and CI fails
+   if one is ever committed.
 2. **Root 1**: `godspeed-trust root --expires <a year or more> --role root=2:<k1>,<k2>,<k3> --role
-   namespaces=...  --role snapshot=1:<online> --role timestamp=1:<online>`, then `godspeed-trust sign
+   namespaces=... --role snapshot=1:<online> --role timestamp=1:<online>`, then `godspeed-trust sign
    trust/root/1.toml --key ...` with enough root keys. Publish root 1's SHA-256 somewhere independent of the
-   registry, so clients can pin it.
+   registry, so clients can pin it (`godspeed fetch --trust-root`).
 3. **Namespaces**: `godspeed-trust namespaces add <publisher> <their public key>` (they get it from
    `godspeed key generate`), then `sign` with the namespaces keys; `godspeed-trust verify`.
-4. **Add a lifecycle rule to `godspeedos-packages`** deleting objects under `staging/` after one day.
-5. `npx wrangler d1 create godspeed-registry`, put the id in `wrangler.toml`, then
-   `npx wrangler d1 migrations apply godspeed-registry --remote`.
-6. `npx wrangler secret put ONLINE_SIGNING_KEY` - the `secret` of the online key file - then
-   `npx wrangler deploy`.
-7. `node scripts/admin.mjs upload-trust trust --remote --registry <url>`.
-8. `node scripts/admin.mjs add-publisher <publisher> <account> --remote`, then `issue-token <account> --remote`,
-   and hand the token over privately.
+4. **Commit `trust/`** (the signed files only) in a pull request. CI verifies it as a client would; the deploy
+   uploads it.
+5. In Cloudflare: create the D1 database `godspeed-registry` and put its id in `wrangler.toml`; add a lifecycle
+   rule to `godspeedos-packages` deleting objects under `staging/` after one day; make an API token with
+   Workers Scripts, D1 and Workers R2 Storage edit rights on this account.
+6. In this repository's settings, an environment `production` with secrets `CLOUDFLARE_API_TOKEN`,
+   `CLOUDFLARE_ACCOUNT_ID` and `ONLINE_SIGNING_KEY` (the `secret` line of the online key file - the only key
+   that ever leaves your machine, because the registry must hold it), and variables `REGISTRY_DEPLOY =
+   enabled` and `REGISTRY_URL` (the Worker's URL).
+7. Merge to `main`, or run the workflow by hand: it applies migrations, deploys, sets the online key, uploads
+   `trust/` and has the registry re-sign its snapshot.
+8. Publishers and tokens: `node scripts/admin.mjs add-publisher <publisher> <account> --remote`, then
+   `issue-token <account> --remote`, and hand the token over privately. (This is the one task still run
+   locally with Node; see the note below.)
 9. Point the public bucket's custom domain at it for reads. The r2.dev URL is for development only.
+
+From then on, a key change is: `godspeed-trust namespaces add | retire | revoke`, `sign`, commit, merge.
 
 Re-sign `namespaces` before it expires (a year by default) and `root` before its expiry; publishing and
 fetching stop when either lapses, rather than continuing on expired trust.
+
+**Still local, with Node: issuing publisher tokens.** A token is a secret, so it cannot be issued by a
+workflow whose logs anyone with read access can see. Moving this off Node is a separate decision - either
+`godspeed-trust` issuing tokens through Cloudflare's API, or publishers making their own token and sending
+only its hash, the way SSH keys work.
