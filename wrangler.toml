@@ -6,17 +6,13 @@ compatibility_date = "2026-10-01"
 # Exact version: `^` is an escape character to cmd.exe, and a pinned build tool is reproducible anyway.
 command = "cargo install -q worker-build@0.8.7 && worker-build --release"
 
-# Public: published packages and the index, served read-only by the bucket's own domain.
+# Public: published packages and the index, served read-only by the bucket's own domain - and, for now,
+# uploads in progress under its `staging/` prefix (src/keys.rs says why that is acceptable, and when it must
+# move to a private bucket). Give the bucket a lifecycle rule deleting objects under `staging/` after 1 day,
+# which sweeps abandoned uploads.
 [[r2_buckets]]
 binding = "PACKAGES"
 bucket_name = "godspeedos-packages"
-
-# PRIVATE: uploads in progress. It must never have a public domain or r2.dev URL - a public bucket serves
-# every key in it, and this one holds files nobody has verified as a whole package yet. Give it a lifecycle
-# rule deleting objects after 1 day, which sweeps abandoned uploads.
-[[r2_buckets]]
-binding = "STAGING"
-bucket_name = "godspeedos-staging"
 
 # Publishers, accounts, memberships and token hashes. Create with `npx wrangler d1 create godspeed-registry`
 # and put the id it prints here. Local development (`wrangler dev`) works with this placeholder.

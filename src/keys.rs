@@ -16,9 +16,15 @@ pub fn index(name: &PackageName<'_>) -> String {
     format!("index/{}/{}.toml", name.publisher(), name.name())
 }
 
-/// A file of an upload in progress, in the private staging bucket.
+/// A file of an upload in progress: `staging/<publisher>/<name>/<version>/<upload>/<file>`.
+///
+/// For now this is a prefix of the PUBLIC bucket, and R2 public access is per bucket, so anyone holding this
+/// exact key can fetch it. That is why `upload` is 128 random bits (unguessable; the bucket's public URL
+/// does not list keys), why the index never names it (so nothing in staging is installable), and why a
+/// lifecycle rule on `staging/` sweeps it within a day. It moves to a private bucket before anyone but the
+/// maintainer holds a publisher token (CLAUDE.md, invariant 5).
 pub fn staged(name: &PackageName<'_>, version: Version, upload: &str, file: &str) -> String {
-    format!("{}/{}/{version}/{upload}/{file}", name.publisher(), name.name())
+    format!("staging/{}/{}/{version}/{upload}/{file}", name.publisher(), name.name())
 }
 
 /// Every file a package may contain other than its manifest, which is never uploaded separately: it
@@ -39,7 +45,7 @@ mod tests {
         assert_eq!(index(&n), "index/alice/hello.toml");
         assert_eq!(
             staged(&n, v, "u1", "contract.toml"),
-            "alice/hello/1.0.0/u1/contract.toml"
+            "staging/alice/hello/1.0.0/u1/contract.toml"
         );
     }
 

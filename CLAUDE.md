@@ -37,11 +37,11 @@ Never add anything to the registry that grants, ranks, recommends or approves wh
 
 ## Architecture
 
-    developer: godspeed publish ----> this Worker (writes) ----> R2 godspeedos-staging   (PRIVATE)
-                                            |
-                                            +----> R2 godspeedos-packages  (PUBLIC, read-only)
-                                                        ^
-    anyone: godspeed install, curl ---------------------+  (the bucket's own domain; never this Worker)
+    developer: godspeed publish ----> this Worker (writes) ----> R2 godspeedos-packages  (PUBLIC, read-only)
+                                                                    index/     packages/     staging/
+                                                                        ^
+    anyone: godspeed install, curl -------------------------------------+  (the bucket's own domain;
+                                                                              never this Worker)
 
 - **Reads never depend on this Worker.** The public bucket's domain serves `index/` and `packages/`
   directly, so downloads keep working when the publishing API is down. The read routes in this Worker exist
@@ -67,9 +67,19 @@ These hold after every change. A change that weakens one is wrong even if every 
 4. **Every byte is verified** with `godspeed-package` - the same crate the CLI and the native package
    manager use - on reservation (the manifest), on upload (each file), and again at finalisation (every file,
    read back from staging). Never write a second implementation of the manifest rules here.
-5. **Staging is a separate, private bucket.** A public R2 domain or r2.dev URL serves every key in its
-   bucket, so staging can never be a prefix of the public one. `godspeedos-staging` must never get a public
-   domain.
+5. **Nothing in staging is findable or installable.** For now uploads in progress live under the
+   `staging/` prefix of the public bucket (the maintainer's choice, to run one bucket). R2 public access is
+   per bucket, not per prefix, so this holds only while all of these do:
+   - upload ids are 128 cryptographically random bits, so a staged key cannot be guessed, and the public
+     URL does not list keys;
+   - the index never names a staged file, so nothing in staging can be installed;
+   - a lifecycle rule on `staging/` deletes what is left after a day;
+   - once the custom domain exists, a rule on it refuses `/staging/*` (r2.dev cannot do this, which is one
+     more reason to retire r2.dev then).
+
+   **Before anyone but the maintainer holds a publisher token, staging moves to a separate private bucket**
+   (`godspeedos-staging`, never given a public domain). Until then the only person who can know a staged
+   key is the maintainer, who uploaded it.
 6. **The database never holds a usable token.** Only SHA-256 hashes are stored. Tokens are printed once, at
    issue, and never logged.
 7. **A timed-out or failed request is not proof of anything.** A storage or runtime error is reported as

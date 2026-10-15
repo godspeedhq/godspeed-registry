@@ -70,6 +70,12 @@ call POST "$API/reservations" "$ALICE_TOKEN" --data-binary "@$PKG/manifest.toml"
 expect 200 "" "alice reserves $VERSION"
 UPLOAD=$(printf '%s' "$BODY" | json "d['upload']")
 FILES=$(printf '%s' "$BODY" | json "' '.join(d['files'])")
+# Staged keys contain the upload id and live in the public bucket for now, so it must be 128 random bits.
+if printf '%s' "$UPLOAD" | grep -qE '^[0-9a-f]{32}$'; then
+  pass=$((pass + 1)); echo "ok    the upload id is 32 hex digits (128 bits)"
+else
+  fail=$((fail + 1)); echo "FAIL  upload id '$UPLOAD' is not 128 bits of hex"
+fi
 call POST "$API/reservations" "$ALICE_TOKEN" --data-binary "@$PKG/manifest.toml"
 expect 200 "" "reserving again resumes the same upload"
 [ "$(printf '%s' "$BODY" | json "d['upload']")" = "$UPLOAD" ] || { fail=$((fail + 1)); echo "FAIL  resumed upload id differs"; }

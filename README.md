@@ -21,6 +21,8 @@ design's step 4): until then, anything published here is integrity-checked but n
 - **No one holds storage credentials.** The Worker holds the bucket bindings; publishers hold a token.
 - **Every byte is verified** with `godspeed-package`, the same crate the CLI and the native package manager
   use: the manifest on reservation, each file as it is uploaded, and every file again at finalisation.
+- **Uploads in progress** live under `staging/` in the same bucket for now, at random, unlisted, unindexed
+  keys swept within a day; they move to a private bucket before anyone else can publish.
 - **One Durable Object per package** serialises reservation and finalisation, so two publishes of one
   version cannot both win.
 - **The index write is the commit point.** Before it, nothing is visible; published files are write-once
@@ -62,9 +64,9 @@ downloaded package passing `godspeed verify`. Nothing reaches Cloudflare.
 
 Not done yet. In order:
 
-1. **Create the private staging bucket**, `godspeedos-staging`. Give it **no** public domain and **no**
-   r2.dev URL - a public bucket serves every key in it - and a lifecycle rule deleting objects after one
-   day, which sweeps abandoned uploads.
+1. **Add a lifecycle rule to `godspeedos-packages`** deleting objects under the `staging/` prefix after one
+   day; it sweeps abandoned uploads. (Uploads in progress share the public bucket for now - `CLAUDE.md`,
+   invariant 5 - and move to a private bucket before anyone else is issued a token.)
 2. `npx wrangler d1 create godspeed-registry`, and put the printed id in `wrangler.toml`.
 3. `npx wrangler d1 migrations apply godspeed-registry --remote`
 4. `npx wrangler deploy`

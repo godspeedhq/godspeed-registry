@@ -21,6 +21,19 @@ pub const RESERVATION_MILLIS: u64 = 15 * 60 * 1000;
 
 const RELEASES: &str = "releases";
 
+/// `bytes` cryptographically random bytes, as lowercase hex, from the runtime's Web Crypto
+/// (`crypto.getRandomValues`).
+fn random_hex(bytes: u32) -> Result<String> {
+    use wasm_bindgen::JsCast;
+    let crypto = js_sys::Reflect::get(&js_sys::global(), &"crypto".into())?;
+    let get: js_sys::Function = js_sys::Reflect::get(&crypto, &"getRandomValues".into())?
+        .dyn_into()
+        .map_err(|_| Error::RustError("crypto.getRandomValues is not available".into()))?;
+    let buf = js_sys::Uint8Array::new_with_length(bytes);
+    get.call1(&crypto, &buf)?;
+    Ok(buf.to_vec().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn reservation_key(version: &str) -> String {
     format!("reservation/{version}")
 }
@@ -183,10 +196,8 @@ async fn reserve(storage: Storage, req: ReserveRequest) -> Result<ApiResult<Rese
             ))));
         }
     }
-    let id: String = Sha256Digest::of(format!("{digest}|{}|{}", req.account, req.now_ms).as_bytes())
-        .to_string()
-        .trim_start_matches("sha256:")[..32]
-        .to_string();
+    // Random, not derived: a staged file's key contains this id and must not be guessable (keys.rs).
+    let id = random_hex(16)?;
     let res = Reservation {
         id,
         version: version.clone(),
@@ -285,7 +296,7 @@ async fn finalise(storage: Storage, env: Env, r: UploadRef) -> Result<ApiResult<
         .version
         .parse()
         .map_err(|e: pkg::VersionError| Error::RustError(e.to_string()))?;
-    let staging = env.bucket("STAGING")?;
+    let staging = env.bucket("PACKAGES")?;
     let packages = env.bucket("PACKAGES")?;
     const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
@@ -384,7 +395,7 @@ async fn finalise(storage: Storage, env: Env, r: UploadRef) -> Result<ApiResult<
     res.published = Some(published.clone());
     storage.put(&reservation_key(&res.version), &res).await?;
 
-    // Best effort: the staging bucket's lifecycle rule removes anything left behind.
+    // Best effort: the lifecycle rule on `staging/` removes anything left behind.
     for file in res.files() {
         let _ = staging.delete(keys::staged(&name, version, &res.id, &file)).await;
     }

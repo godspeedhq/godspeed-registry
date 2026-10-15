@@ -1,7 +1,8 @@
 //! The Godspeed package registry's publishing API.
 //!
-//! A Cloudflare Worker in front of two R2 buckets: `PACKAGES`, public and read-only to the world, and
-//! `STAGING`, private, for uploads in progress. Developers never hold storage credentials: this Worker
+//! A Cloudflare Worker in front of the R2 bucket `PACKAGES`: public and read-only to the world, with uploads
+//! in progress under its `staging/` prefix (see `keys::staged` for why that is safe for now, and when it
+//! must move to a private bucket). Developers never hold storage credentials: this Worker
 //! holds the bindings, authenticates publishers, verifies every byte with the same `godspeed-package`
 //! crate the CLI and the native package manager use, and finalises atomically through one Durable Object
 //! per package. The design is `docs/publishing-design.md` in the `godspeed-cli` repository.
@@ -223,7 +224,7 @@ async fn upload(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
         return e.into_response();
     }
     ctx.env
-        .bucket("STAGING")?
+        .bucket("PACKAGES")?
         .put(keys::staged(&name, version, &res.id, &file), bytes)
         .execute()
         .await?;
