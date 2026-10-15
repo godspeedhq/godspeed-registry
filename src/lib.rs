@@ -19,8 +19,10 @@ mod auth;
 mod keys;
 mod object;
 mod time;
+mod trust;
 
 pub use object::PackageObject;
+pub use trust::Catalog;
 
 use api::{respond, ApiError, ApiResult};
 use godspeed_package::{self as pkg, PackageName, Version};
@@ -226,8 +228,15 @@ async fn upload(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     match object::check_file(&res.manifest, &manifest, &file, &bytes) {
         Err(e) => return e.into_response(),
         Ok(Some(key)) => {
-            if !auth::key_registered(&ctx.env.d1("DB")?, name.publisher(), &key.to_string()).await? {
-                return object::unregistered(name.publisher(), &key).into_response();
+            if let Err(e) = trust::may_sign(
+                &ctx.env.bucket("PACKAGES")?,
+                name.publisher(),
+                &key,
+                &time::rfc3339(now_ms()),
+            )
+            .await?
+            {
+                return e.into_response();
             }
         }
         Ok(None) => {}
@@ -290,7 +299,23 @@ async fn read(key: String, env: &Env) -> Result<Response> {
 
 const ABOUT: &str = "Godspeed package registry.\n\
     Read: GET /index/<publisher>/<name>.toml, GET /packages/<publisher>/<name>/<version>/<file>\n\
+    Trust: GET /trust/{root/<n>,namespaces,snapshot,timestamp}.{toml,sig}\n\
     Publish: use `godspeed publish`.\n";
+
+/// Re-sign the snapshot and timestamp if anything changed or they are near expiry; otherwise do nothing.
+/// Public and idempotent: the maintainer calls it after uploading trust metadata, and calling it again is
+/// harmless.
+async fn trust_refresh(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    trust::request_refresh(&ctx.env, now_ms()).await
+}
+
+/// Every six hours (wrangler.toml), so the timestamp is always re-signed before it expires.
+#[event(scheduled)]
+async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    if let Err(e) = trust::request_refresh(&env, now_ms()).await {
+        console_error!("scheduled trust refresh failed: {e}");
+    }
+}
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -298,6 +323,13 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get("/", |_, _| Response::ok(ABOUT))
         .get_async("/v1/whoami", whoami)
         .post_async("/v1/logout", logout)
+        .post_async("/v1/trust/refresh", trust_refresh)
+        .get_async("/trust/:file", |_, ctx| async move {
+            read(format!("trust/{}", param(&ctx, "file")), &ctx.env).await
+        })
+        .get_async("/trust/root/:file", |_, ctx| async move {
+            read(format!("trust/root/{}", param(&ctx, "file")), &ctx.env).await
+        })
         .post_async("/v1/packages/:publisher/:name/reservations", reserve)
         .put_async("/v1/packages/:publisher/:name/:version/uploads/:upload/:file", upload)
         .post_async(

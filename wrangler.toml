@@ -22,10 +22,26 @@ database_name = "godspeed-registry"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
-# One object per package: the authority on what is published and what is being published.
+# One object per package: the authority on what is published and what is being published. And one catalog,
+# which alone signs the snapshot and timestamp, so their versions only ever increase.
 [durable_objects]
-bindings = [{ name = "PACKAGE", class_name = "PackageObject" }]
+bindings = [
+  { name = "PACKAGE", class_name = "PackageObject" },
+  { name = "CATALOG", class_name = "Catalog" },
+]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PackageObject"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Catalog"]
+
+# Re-sign the timestamp (valid one day) well before it expires, even when nothing is published.
+[triggers]
+crons = ["17 */6 * * *"]
+
+# Secret, never in this file: ONLINE_SIGNING_KEY, the 64-hex-digit seed of the key the root lists for the
+# snapshot and timestamp roles. Set it with `npx wrangler secret put ONLINE_SIGNING_KEY`; for `wrangler dev`,
+# in .dev.vars (git-ignored). Make it with `godspeed-trust keygen`, on a machine you trust.

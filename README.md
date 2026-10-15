@@ -1,13 +1,12 @@
 # godspeed-registry
 
-The publishing API of the Godspeed package registry: a Cloudflare Worker in front of R2. The design - and
-the reasons for each part of it - is `docs/publishing-design.md` in
-[godspeed-cli](https://github.com/godspeedhq/godspeed-cli).
+The Godspeed package registry service: the server `godspeed publish` uploads to, and the signed trust metadata
+`godspeed fetch` (and, later, a Godspeed machine's package manager) verifies before keeping anything. A
+Cloudflare Worker in front of R2. The design - and the reasons for each part of it - is
+`docs/publishing-design.md` in [godspeed-cli](https://github.com/godspeedhq/godspeed-cli); the trust formats
+are its `docs/trust-metadata.md`.
 
-**Status: works end to end locally, publisher signatures included. Not deployed.** The first public
-publish waits for the trust anchor (signed root and index metadata - the design's section 6, slice 2):
-until then, which key belongs to a publisher is this registry's own record, which clients cannot check
-independently.
+**Status: works end to end locally - publishing, publisher signatures, and the trust anchor. Not deployed.**
 
 ## What it does
 
@@ -16,39 +15,46 @@ independently.
     POST /v1/packages/<publisher>/<name>/<version>/uploads/<id>/finalise
     GET  /v1/whoami
     POST /v1/logout                                                revokes the token used
+    POST /v1/trust/refresh                                         re-sign snapshot/timestamp if needed (idempotent)
 
     GET  /index/<publisher>/<name>.toml                            the package index (public)
     GET  /packages/<publisher>/<name>/<version>/<file>             a published file (public)
+    GET  /trust/{root/<n>,namespaces,snapshot,timestamp}.{toml,sig} the trust metadata (public)
 
-- **No one holds storage credentials.** The Worker holds the bucket bindings; publishers hold a token.
+- **No one holds storage credentials.** The Worker holds the bucket binding; publishers hold a token.
 - **Every byte is verified** with `godspeed-package`, the same crate the CLI and the native package manager
   use: the manifest on reservation, each file as it is uploaded, and every file again at finalisation.
-- **Every release is signed** (`manifest.sig`) by a key the maintainer registered for its namespace and has
-  not revoked; checked on upload and again at finalisation, and published beside the manifest.
+- **Every release is signed** (`manifest.sig`) by a key the signed namespaces metadata lists as active for
+  its namespace; checked on upload and again at finalisation.
+- **Which keys may sign for whom is signed offline** (`tools/trust`) and uploaded; the Worker verifies the
+  root chain and the namespaces signatures exactly as a client does, and cannot change either.
+- **The Worker signs snapshot and timestamp** with its one online key: the snapshot rebuilt from the bucket's
+  actual index files after each publish, the timestamp valid a day and re-signed every six hours by a cron.
 - **Uploads in progress** live under `staging/` in the same bucket for now, at random, unlisted, unindexed
   keys swept within a day; they move to a private bucket before anyone else can publish.
 - **One Durable Object per package** serialises reservation and finalisation, so two publishes of one
-  version cannot both win.
-- **The index write is the commit point.** Before it, nothing is visible; published files are write-once
-  and re-checked by digest, so a finalise that died half way is completed by the next one, never left
-  half-visible.
+  version cannot both win; **one catalog object** alone signs snapshots and timestamps, so their versions
+  only increase.
+- **The index write is the commit point.** Before it, nothing is visible; published files are write-once.
 - Errors are JSON, `{"error": "<code>", "message": "..."}`, with stable codes (`src/api.rs`).
 
-Reading needs none of this: in production the bucket's own domain serves `/index/...` and `/packages/...`
-directly, so downloads keep working when this Worker does not. The read routes here exist for local
-development.
+Reading needs none of this: in production the bucket's own domain serves `/index/`, `/packages/` and `/trust/`
+directly, so downloads - and their verification - keep working when this Worker does not.
 
 ## Layout
 
-    src/lib.rs        routes, authentication and authorisation, upload checks, the read routes
-    src/object.rs     the per-package Durable Object: reserve, stage, finalise
-    src/auth.rs       tokens (stored as SHA-256 only), namespace membership and signing keys, in D1
-    src/keys.rs       where everything lives in the buckets
-    migrations/       the D1 schema
-    scripts/admin.mjs add publishers, issue and revoke tokens, register and revoke signing keys (by hand)
-    scripts/smoke.sh  the protocol end to end against a running registry
+    src/lib.rs          routes, authentication and authorisation, upload checks, the read routes, the cron
+    src/object.rs       the per-package Durable Object: reserve, stage, finalise
+    src/trust.rs        reading the offline trust metadata; the catalog that signs snapshot and timestamp
+    src/auth.rs         tokens (stored as SHA-256 only) and namespace membership, in D1
+    src/keys.rs         where everything lives in the bucket
+    migrations/         the D1 schema
+    tools/trust/        godspeed-trust: the maintainer's OFFLINE tool for root and namespaces
+    scripts/admin.mjs   publishers and tokens (by hand), and upload-trust
+    scripts/smoke.sh    the protocol end to end against a running registry
     scripts/local-test.sh   all of it from nothing, locally
-    scripts/cli-test.sh     the real `godspeed` CLI logging in and publishing to it, locally
+    scripts/cli-test.sh     the real `godspeed` CLI against it, locally
+    scripts/trust-setup.sh  a local trust anchor, for the two tests above
 
 It depends on `godspeed-package` by path (`../godspeed-cli/crates/godspeed-package`), so check the two
 repositories out side by side. That becomes a git dependency once the crate is on `godspeed-cli`'s main
@@ -59,34 +65,41 @@ branch.
     npm install          # pins wrangler; approves only esbuild's and workerd's install scripts
     rustup target add wasm32-unknown-unknown
     scripts/local-test.sh <package-dir> path/to/godspeed
-
-`<package-dir>` is what `godspeed package` wrote for `alice/<name>`. The test wipes `.wrangler/state`,
-creates publishers `alice` and `bob` with fresh tokens, a signing key registered for alice and a rogue one
-registered for nobody, signs a copy of the package, starts `wrangler dev` (every binding local), and runs
-`scripts/smoke.sh`: 30 checks, from refused tokens and signatures to a concurrent reservation race, ending
-with the downloaded package passing `godspeed verify`. Nothing reaches Cloudflare.
-
     GODSPEED_OS=<GodspeedOS checkout> scripts/cli-test.sh path/to/godspeed
 
-drives the developer's side instead: `login`, `whoami`, `key generate`, a publish refused for having no key
-and then for an unregistered one, a publish that resumes once the key is registered, a second publish that
-must report the identical release as already published, a refused release after the key is revoked, a
-refused republish, a refused foreign namespace, and `logout`. 17 checks.
+Both wipe `.wrangler/state`, give the local registry a trust anchor made with `godspeed-trust` (offline keys,
+root 1, namespaces), put its online key in `.dev.vars`, and start `wrangler dev` with every binding local.
+Nothing reaches Cloudflare.
+
+- `local-test.sh` runs `scripts/smoke.sh`: **33 checks**, from refused tokens and signatures to a concurrent
+  reservation race and `godspeed fetch` verifying a release through the whole chain (and refusing a root not
+  the one pinned).
+- `cli-test.sh` drives the developer's side: **23 checks**, from login and an unlisted key to publish,
+  `fetch`, a key retired (its earlier release still verifies; it signs nothing new; a new key takes over), a
+  key revoked (what it signed is refused), and logout.
 
 ## Deploying (maintainer)
 
 Not done yet. In order:
 
-1. **Add a lifecycle rule to `godspeedos-packages`** deleting objects under the `staging/` prefix after one
-   day; it sweeps abandoned uploads. (Uploads in progress share the public bucket for now - `CLAUDE.md`,
-   invariant 5 - and move to a private bucket before anyone else is issued a token.)
-2. `npx wrangler d1 create godspeed-registry`, and put the printed id in `wrangler.toml`.
-3. `npx wrangler d1 migrations apply godspeed-registry --remote`
-4. `npx wrangler deploy`
-5. `node scripts/admin.mjs add-publisher <publisher> <account> --remote`, then
-   `node scripts/admin.mjs issue-token <account> --remote`, and hand the token over privately. It is
-   printed once; the registry keeps only its hash.
-6. Register the publisher's signing key: they run `godspeed key generate` and send you the public key it
-   prints (never a file); `node scripts/admin.mjs add-key <publisher> <ed25519:...> --remote`.
-7. Point the public bucket's custom domain at it for reads. The r2.dev URL is for development only: it is
-   rate-limited and uncached.
+1. **Offline keys**, on a machine you trust and ideally keep offline:
+   `cargo run -p godspeed-trust -- keygen root-1.key` (and root-2, root-3, namespaces keys, and one online
+   key). Back each up; keep the root keys apart from one another.
+2. **Root 1**: `godspeed-trust root --expires <a year or more> --role root=2:<k1>,<k2>,<k3> --role
+   namespaces=...  --role snapshot=1:<online> --role timestamp=1:<online>`, then `godspeed-trust sign
+   trust/root/1.toml --key ...` with enough root keys. Publish root 1's SHA-256 somewhere independent of the
+   registry, so clients can pin it.
+3. **Namespaces**: `godspeed-trust namespaces add <publisher> <their public key>` (they get it from
+   `godspeed key generate`), then `sign` with the namespaces keys; `godspeed-trust verify`.
+4. **Add a lifecycle rule to `godspeedos-packages`** deleting objects under `staging/` after one day.
+5. `npx wrangler d1 create godspeed-registry`, put the id in `wrangler.toml`, then
+   `npx wrangler d1 migrations apply godspeed-registry --remote`.
+6. `npx wrangler secret put ONLINE_SIGNING_KEY` - the `secret` of the online key file - then
+   `npx wrangler deploy`.
+7. `node scripts/admin.mjs upload-trust trust --remote --registry <url>`.
+8. `node scripts/admin.mjs add-publisher <publisher> <account> --remote`, then `issue-token <account> --remote`,
+   and hand the token over privately.
+9. Point the public bucket's custom domain at it for reads. The r2.dev URL is for development only.
+
+Re-sign `namespaces` before it expires (a year by default) and `root` before its expiry; publishing and
+fetching stop when either lapses, rather than continuing on expired trust.

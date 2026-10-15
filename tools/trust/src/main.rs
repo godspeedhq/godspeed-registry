@@ -18,14 +18,18 @@
 
 use clap::{Parser, Subcommand};
 use godspeed_package::trust::{
-    self, ended, verify_by, verify_next_root, write_namespaces, write_root, KeyStatus, NamespaceKey, Namespaces,
-    Role, Root,
+    self, ended, verify_by, verify_next_root, write_namespaces, write_root, KeyStatus, NamespaceKey, Namespaces, Role,
+    Root,
 };
 use godspeed_package::{is_timestamp, PackageName, PublicKey};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "godspeed-trust", version, about = "Offline signing of the registry's root and namespaces metadata")]
+#[command(
+    name = "godspeed-trust",
+    version,
+    about = "Offline signing of the registry's root and namespaces metadata"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -110,7 +114,12 @@ fn rfc3339(secs: u64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + u64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 fn a_year_from_now() -> String {
@@ -152,7 +161,7 @@ fn decode_seed(hex: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    for (i, pair) in b.chunks_exact(2).enumerate() {
+    for (i, pair) in b.as_chunks::<2>().0.iter().enumerate() {
         out[i] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(out)
@@ -162,13 +171,21 @@ fn decode_seed(hex: &str) -> Option<[u8; 32]> {
 fn load_key(path: &Path) -> Result<[u8; 32]> {
     let text = read(path)?;
     let field = |name: &str| {
-        text.lines()
-            .find_map(|l| l.strip_prefix(name).and_then(|r| r.strip_prefix(" = \"")).and_then(|r| r.strip_suffix('"')))
+        text.lines().find_map(|l| {
+            l.strip_prefix(name)
+                .and_then(|r| r.strip_prefix(" = \""))
+                .and_then(|r| r.strip_suffix('"'))
+        })
     };
-    let seed = field("secret").and_then(decode_seed).ok_or(format!("{} holds no valid key", path.display()))?;
+    let seed = field("secret")
+        .and_then(decode_seed)
+        .ok_or(format!("{} holds no valid key", path.display()))?;
     let public = godspeed_package::ManifestSignature::public_key(&seed).to_string();
     if field("public") != Some(public.as_str()) {
-        return Err(format!("{}: the public key does not match the secret one", path.display()));
+        return Err(format!(
+            "{}: the public key does not match the secret one",
+            path.display()
+        ));
     }
     Ok(seed)
 }
@@ -210,17 +227,28 @@ fn root_versions(dir: &Path) -> u64 {
 }
 
 fn parse_role(spec: &str) -> Result<(Role, u32, Vec<PublicKey>)> {
-    let (name, rest) = spec.split_once('=').ok_or(format!("--role {spec}: expected name=threshold:key,key"))?;
+    let (name, rest) = spec
+        .split_once('=')
+        .ok_or(format!("--role {spec}: expected name=threshold:key,key"))?;
     let role = Role::from_name(name).ok_or(format!("--role {spec}: no role \"{name}\""))?;
-    let (threshold, keys) = rest.split_once(':').ok_or(format!("--role {spec}: expected name=threshold:key,key"))?;
-    let threshold: u32 = threshold.parse().map_err(|_| format!("--role {spec}: threshold is not a number"))?;
+    let (threshold, keys) = rest
+        .split_once(':')
+        .ok_or(format!("--role {spec}: expected name=threshold:key,key"))?;
+    let threshold: u32 = threshold
+        .parse()
+        .map_err(|_| format!("--role {spec}: threshold is not a number"))?;
     // Keys contain ':' themselves (ed25519:...), so split on commas only.
     let keys: Vec<PublicKey> = keys
         .split(',')
-        .map(|k| k.parse().map_err(|_| format!("--role {spec}: \"{k}\" is not ed25519:<64 hex digits>")))
+        .map(|k| {
+            k.parse()
+                .map_err(|_| format!("--role {spec}: \"{k}\" is not ed25519:<64 hex digits>"))
+        })
         .collect::<Result<_>>()?;
     if threshold == 0 || threshold as usize > keys.len() {
-        return Err(format!("--role {spec}: the threshold must be between 1 and the number of keys"));
+        return Err(format!(
+            "--role {spec}: the threshold must be between 1 and the number of keys"
+        ));
     }
     Ok((role, threshold, keys))
 }
@@ -240,7 +268,10 @@ fn new_root(dir: &Path, expires: &str, specs: &[String]) -> Result<()> {
     write(&path, &text)?;
     println!("Wrote root version {version}: {}", path.display());
     if version > 1 {
-        println!("Sign it with root keys of version {} (enough for ITS threshold) and of this version.", version - 1);
+        println!(
+            "Sign it with root keys of version {} (enough for ITS threshold) and of this version.",
+            version - 1
+        );
     } else {
         println!("Sign it with enough of its root keys to meet the root threshold.");
     }
@@ -262,7 +293,11 @@ fn edit_namespaces(dir: &Path, expires: Option<&str>, action: &NamespaceAction) 
                 KeyStatus::Retired(at) => ended("retired", at),
                 KeyStatus::Revoked(at) => ended("revoked", at),
             };
-            keys.push(NamespaceKey { publisher: publisher.to_string(), key, ended });
+            keys.push(NamespaceKey {
+                publisher: publisher.to_string(),
+                key,
+                ended,
+            });
         }
     }
     let (publisher, key) = match action {
@@ -273,15 +308,23 @@ fn edit_namespaces(dir: &Path, expires: Option<&str>, action: &NamespaceAction) 
     if !PackageName::is_valid_part(publisher) {
         return Err(format!("\"{publisher}\" is not a publisher name"));
     }
-    let key: PublicKey = key.parse().map_err(|_| format!("\"{key}\" is not ed25519:<64 hex digits>"))?;
+    let key: PublicKey = key
+        .parse()
+        .map_err(|_| format!("\"{key}\" is not ed25519:<64 hex digits>"))?;
     let existing = keys.iter_mut().find(|k| k.publisher == *publisher && k.key == key);
     let what = match (action, existing) {
         (NamespaceAction::Add { .. }, None) => {
-            keys.push(NamespaceKey { publisher: publisher.clone(), key, ended: None });
+            keys.push(NamespaceKey {
+                publisher: publisher.clone(),
+                key,
+                ended: None,
+            });
             format!("{key} may now sign releases under {publisher}/")
         }
         (NamespaceAction::Add { .. }, Some(_)) => {
-            return Err(format!("{key} is already listed for {publisher}/; a key is never re-added"))
+            return Err(format!(
+                "{key} is already listed for {publisher}/; a key is never re-added"
+            ))
         }
         (NamespaceAction::Retire { at, .. }, Some(k)) if k.ended.is_none() => {
             let at = match at {
@@ -309,7 +352,10 @@ fn edit_namespaces(dir: &Path, expires: Option<&str>, action: &NamespaceAction) 
     write(&path, &text)?;
     let _ = std::fs::remove_file(sig_path(&path)); // its signatures covered the old text
     println!("{what}.");
-    println!("namespaces is now version {}, unsigned: sign it with enough namespaces keys, then upload.", version + 1);
+    println!(
+        "namespaces is now version {}, unsigned: sign it with enough namespaces keys, then upload.",
+        version + 1
+    );
     Ok(())
 }
 
@@ -332,8 +378,10 @@ fn sign(document: &Path, key_files: &[PathBuf]) -> Result<()> {
         for line in old.lines().skip(1) {
             let one = format!("format = 1\n{line}\n");
             if trust::verify_signatures(role, text.as_bytes(), &one, 1, |_| true).is_ok() {
-                if let Some((k, s)) =
-                    line.strip_prefix("signature = \"").and_then(|l| l.strip_suffix('"')).and_then(|l| l.split_once(' '))
+                if let Some((k, s)) = line
+                    .strip_prefix("signature = \"")
+                    .and_then(|l| l.strip_suffix('"'))
+                    .and_then(|l| l.split_once(' '))
                 {
                     if let (Ok(k), Ok(s)) = (k.parse(), s.parse()) {
                         sigs.push((k, s));
@@ -348,7 +396,11 @@ fn sign(document: &Path, key_files: &[PathBuf]) -> Result<()> {
     }
     let out = trust::write_signatures(&sigs);
     write(&sig_path(document), &out)?;
-    println!("{} now has {} signature(s).", document.display(), out.lines().count() - 1);
+    println!(
+        "{} now has {} signature(s).",
+        document.display(),
+        out.lines().count() - 1
+    );
     Ok(())
 }
 
@@ -364,7 +416,10 @@ fn verify(dir: &Path, now: Option<&str>) -> Result<()> {
     let mut texts = Vec::new();
     for v in 1..=latest {
         let p = dir.join("root").join(format!("{v}.toml"));
-        texts.push((read(&p)?, read(&sig_path(&p)).map_err(|_| format!("root {v} is not signed"))?));
+        texts.push((
+            read(&p)?,
+            read(&sig_path(&p)).map_err(|_| format!("root {v} is not signed"))?,
+        ));
     }
     let (t1, s1) = &texts[0];
     let mut root = Root::parse(t1).map_err(|e| format!("root 1: {e}"))?;
@@ -372,9 +427,15 @@ fn verify(dir: &Path, now: Option<&str>) -> Result<()> {
     println!("root 1: signed by its root keys");
     for (i, (t, s)) in texts.iter().enumerate().skip(1) {
         root = verify_next_root(&root, t, s).map_err(|e| format!("root {}: {e}", i + 1))?;
-        println!("root {}: signed by the root keys of version {} and of its own", i + 1, i);
+        println!(
+            "root {}: signed by the root keys of version {} and of its own",
+            i + 1,
+            i
+        );
     }
-    root.header.check_fresh(&now).map_err(|e| format!("root {latest}: {e}"))?;
+    root.header
+        .check_fresh(&now)
+        .map_err(|e| format!("root {latest}: {e}"))?;
     for role in Role::ALL {
         println!("  {role}: threshold {}", root.threshold(role));
     }
@@ -386,7 +447,10 @@ fn verify(dir: &Path, now: Option<&str>) -> Result<()> {
         let ns = Namespaces::parse(&text).map_err(|e| format!("namespaces: {e}"))?;
         verify_by(&root, Role::Namespaces, text.as_bytes(), &sigs).map_err(|e| format!("namespaces: {e}"))?;
         ns.header.check_fresh(&now).map_err(|e| format!("namespaces: {e}"))?;
-        println!("namespaces {}: signed by the namespaces keys of root {latest}; expires {}", ns.header.version, ns.header.expires);
+        println!(
+            "namespaces {}: signed by the namespaces keys of root {latest}; expires {}",
+            ns.header.version, ns.header.expires
+        );
         for (publisher, status, key) in ns.entries() {
             let s = match status {
                 KeyStatus::Active => "active".to_string(),

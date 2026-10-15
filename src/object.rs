@@ -101,6 +101,23 @@ pub struct Published {
     pub version: String,
     pub manifest: String,
     pub published: String,
+    /// The signed snapshot version that includes this release, or `None` if the catalog could not re-sign
+    /// yet. The release is committed either way; clients see it once a snapshot lists it (the next refresh,
+    /// at the latest within six hours).
+    #[serde(default)]
+    pub snapshot: Option<u64>,
+}
+
+/// Ask the catalog to re-sign the snapshot and timestamp, and report the snapshot version, if it could.
+async fn refresh_snapshot(env: &Env, now_ms: u64) -> Option<u64> {
+    let mut resp = crate::trust::request_refresh(env, now_ms).await.ok()?;
+    if resp.status_code() != 200 {
+        return None;
+    }
+    resp.json::<crate::trust::Refreshed>()
+        .await
+        .ok()
+        .map(|r| r.snapshot_version)
 }
 
 /// Check that `bytes` are the file `file` that the manifest (`manifest_text`, parsed as `manifest`) names.
@@ -153,14 +170,6 @@ pub fn check_file(
             pkg::VerifyError::DigestMismatch { .. } => ApiError::digest_mismatch(format!("{file}: {e}")),
             _ => ApiError::size_mismatch(format!("{file}: {e}")),
         })
-}
-
-/// The refusal for a signature by a key not registered (or no longer registered) for `publisher`.
-pub fn unregistered(publisher: &str, key: &pkg::PublicKey) -> ApiError {
-    ApiError::key_not_registered(format!(
-        "{key} is not registered for signing under {publisher}/, or has been revoked. Releases under \
-         {publisher}/ must be signed by a key the registry maintainer registered."
-    ))
 }
 
 /// Look up a reservation for an upload, checking it is this account's, this upload's, and still open.
@@ -300,12 +309,13 @@ async fn finalise(storage: Storage, env: Env, r: UploadRef) -> Result<ApiResult<
         Err(e) => return Ok(Err(e)),
     };
     if let Some(published) = &res.published {
-        // Finalising twice is answered, not repeated.
+        // Finalising twice is answered, not repeated (the refresh is a no-op unless the snapshot is stale).
         return Ok(Ok(Published {
             name: r.name,
             version: res.version,
             manifest: res.manifest_digest,
             published: published.clone(),
+            snapshot: refresh_snapshot(&env, r.now_ms).await,
         }));
     }
     let missing: Vec<String> = res.files().into_iter().filter(|f| !res.staged.contains(f)).collect();
@@ -341,10 +351,10 @@ async fn finalise(storage: Storage, env: Env, r: UploadRef) -> Result<ApiResult<
         };
         match check_file(&res.manifest, &manifest, &file, &bytes) {
             Err(e) => return Ok(Err(e)),
-            // Checked again here, not only at upload: the key may have been revoked in between.
+            // Checked again here, not only at upload: the key may have been retired or revoked in between.
             Ok(Some(key)) => {
-                if !crate::auth::key_registered(&env.d1("DB")?, name.publisher(), &key.to_string()).await? {
-                    return Ok(Err(unregistered(name.publisher(), &key)));
+                if let Err(e) = crate::trust::may_sign(&packages, name.publisher(), &key, &rfc3339(r.now_ms)).await? {
+                    return Ok(Err(e));
                 }
             }
             Ok(None) => {}
@@ -438,6 +448,7 @@ async fn finalise(storage: Storage, env: Env, r: UploadRef) -> Result<ApiResult<
         version: res.version,
         manifest: res.manifest_digest,
         published,
+        snapshot: refresh_snapshot(&env, r.now_ms).await,
     }))
 }
 

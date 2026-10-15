@@ -1,29 +1,39 @@
 #!/usr/bin/env node
-// Registry administration, phase 1: approve publishers, issue tokens and register signing keys by hand.
+// Registry administration, phase 1: approve publishers and issue tokens by hand, and upload the trust
+// metadata signed offline with `godspeed-trust`.
 //
-//   node scripts/admin.mjs add-publisher <publisher> <account>   [--remote]
-//   node scripts/admin.mjs issue-token   <account> [--days 90]   [--remote]
-//   node scripts/admin.mjs revoke-tokens <account>               [--remote]
-//   node scripts/admin.mjs add-key       <publisher> <ed25519:...> [--remote]
-//   node scripts/admin.mjs revoke-key    <publisher> <ed25519:...> [--remote]
-//   node scripts/admin.mjs list                                  [--remote]
+//   node scripts/admin.mjs add-publisher <publisher> <account>                  [--remote]
+//   node scripts/admin.mjs issue-token   <account> [--days 90]                  [--remote]
+//   node scripts/admin.mjs revoke-tokens <account>                              [--remote]
+//   node scripts/admin.mjs list                                                 [--remote]
+//   node scripts/admin.mjs upload-trust  <trust-dir> [--registry <url>]         [--remote]
 //
-// Run `npm install` first (it pins wrangler). Without --remote it acts on the local development database
-// that `wrangler dev` uses. A token is printed once and never stored: the database keeps only its SHA-256.
-// A signing key is the PUBLIC key a publisher sends (`godspeed key show`); never accept a key file.
+// Run `npm install` first (it pins wrangler). Without --remote it acts on the local development database and
+// bucket that `wrangler dev` uses. A token is printed once and never stored: the database keeps only its
+// SHA-256.
+//
+// Which keys may sign for a publisher is NOT kept here: it is the namespaces document, signed offline with
+// `godspeed-trust` (tools/trust) on the machine that holds the offline keys. `upload-trust` only copies
+// what that tool signed into the bucket - it signs nothing - and then asks the registry to re-sign its
+// snapshot, so clients see the new document at once.
 
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const remote = args.includes("--remote");
-const daysAt = args.indexOf("--days");
-const days = daysAt >= 0 ? Number(args[daysAt + 1]) : 90;
-const positional = args.filter((a, i) => !a.startsWith("--") && !(daysAt >= 0 && i === daysAt + 1));
+const valueOf = (flag) => {
+  const i = args.indexOf(flag);
+  return i >= 0 ? args[i + 1] : undefined;
+};
+const days = valueOf("--days") !== undefined ? Number(valueOf("--days")) : 90;
+const registry = valueOf("--registry");
+const flagValues = new Set(["--days", "--registry"].map((f) => args.indexOf(f) + 1).filter((i) => i > 0));
+const positional = args.filter((a, i) => !a.startsWith("--") && !flagValues.has(i));
 const [command, ...rest] = positional;
 
 const NAME = /^[a-z][a-z0-9-]{0,63}$/; // the package contract's rule for a publisher or service name
@@ -38,17 +48,19 @@ function name(value, what) {
   return value; // safe to interpolate: the pattern admits no quote or SQL syntax
 }
 
-const KEY = /^ed25519:[0-9a-f]{64}$/; // the package contract's spelling of a public key
-
-function key(value) {
-  if (!value || !KEY.test(value)) fail(`"${value ?? ""}" is not a public key: expected ed25519: and 64 lowercase hex digits (from \`godspeed key show\`)`);
-  return value; // safe to interpolate: the pattern admits no quote or SQL syntax
-}
-
 const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WRANGLER = join(ROOT, "node_modules", "wrangler", "bin", "wrangler.js");
+
+// The pinned wrangler (package.json), run by this same Node: no shell, no PATH lookup, any OS.
+function wrangler(argv, capture = true) {
+  return execFileSync(process.execPath, [WRANGLER, ...argv], {
+    encoding: "utf8",
+    stdio: ["ignore", capture ? "pipe" : "inherit", "inherit"],
+    cwd: ROOT,
+  });
+}
 
 // Statements go through a file, not the command line, so no shell ever re-splits or re-quotes them.
 function sql(statement) {
@@ -56,13 +68,7 @@ function sql(statement) {
   const file = join(dir, "statement.sql");
   writeFileSync(file, statement);
   try {
-    // The pinned wrangler (package.json), run by this same Node: no shell, no PATH lookup, any OS.
-    const out = execFileSync(
-      process.execPath,
-      [WRANGLER, "d1", "execute", "godspeed-registry", remote ? "--remote" : "--local", "--json", "--file", file],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], cwd: ROOT },
-    );
-    return JSON.parse(out);
+    return JSON.parse(wrangler(["d1", "execute", "godspeed-registry", remote ? "--remote" : "--local", "--json", "--file", file]));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -80,6 +86,7 @@ switch (command) {
         `INSERT OR IGNORE INTO members (publisher, account) VALUES ('${publisher}', '${account}');`,
     );
     console.log(`${account} may now publish under ${publisher}/`);
+    console.log(`Their signing key goes in the signed namespaces metadata: godspeed-trust namespaces add ${publisher} <key>`);
     break;
   }
   case "issue-token": {
@@ -101,24 +108,6 @@ switch (command) {
     console.log(`Every token of ${account} is revoked.`);
     break;
   }
-  case "add-key": {
-    const publisher = name(rest[0], "publisher");
-    const k = key(rest[1]);
-    const found = sql(`SELECT name FROM publishers WHERE name = '${publisher}'`)[0].results;
-    if (found.length === 0) fail(`no publisher ${publisher}; add it with add-publisher first`);
-    sql(`INSERT OR IGNORE INTO signing_keys (publisher, key, added) VALUES ('${publisher}', '${k}', '${now}')`);
-    const live = sql(`SELECT revoked FROM signing_keys WHERE publisher = '${publisher}' AND key = '${k}'`)[0].results[0];
-    if (live.revoked) fail(`that key was revoked for ${publisher}/ at ${live.revoked}; a revoked key is never re-registered - ask for a new one`);
-    console.log(`${k} may now sign releases under ${publisher}/`);
-    break;
-  }
-  case "revoke-key": {
-    const publisher = name(rest[0], "publisher");
-    const k = key(rest[1]);
-    sql(`UPDATE signing_keys SET revoked = '${now}' WHERE publisher = '${publisher}' AND key = '${k}' AND revoked IS NULL`);
-    console.log(`${k} can no longer sign releases under ${publisher}/. Releases it already signed stay published.`);
-    break;
-  }
   case "list": {
     const rows = sql(
       "SELECT m.publisher, m.account, COUNT(t.hash) AS live_tokens FROM members m " +
@@ -127,13 +116,36 @@ switch (command) {
     )[0].results;
     for (const r of rows) console.log(`${r.publisher}/  ${r.account}  (${r.live_tokens} live token(s))`);
     if (rows.length === 0) console.log("No publishers yet.");
-    const keys = sql("SELECT publisher, key, added, revoked FROM signing_keys ORDER BY publisher, added")[0].results;
-    for (const k of keys) console.log(`${k.publisher}/  key ${k.key}  ${k.revoked ? "revoked " + k.revoked : "since " + k.added}`);
+    console.log("Signing keys: see the signed namespaces metadata (godspeed-trust verify).");
+    break;
+  }
+  case "upload-trust": {
+    const dir = rest[0] ?? fail("upload-trust <trust-dir>: the directory godspeed-trust wrote");
+    // Only the offline documents. Snapshot and timestamp are the registry's to sign, never uploaded.
+    const files = [];
+    for (const f of ["namespaces.toml", "namespaces.sig"]) if (existsSync(join(dir, f))) files.push(f);
+    if (existsSync(join(dir, "root"))) {
+      for (const f of readdirSync(join(dir, "root")).sort()) if (/^[1-9][0-9]*\.(toml|sig)$/.test(f)) files.push(`root/${f}`);
+    }
+    if (!files.some((f) => f.startsWith("root/"))) fail(`${dir} has no root/<n>.toml: run godspeed-trust root first`);
+    for (const f of files) {
+      wrangler(["r2", "object", "put", `godspeedos-packages/trust/${f}`, "--file", join(dir, f),
+        "--content-type", "application/toml", remote ? "--remote" : "--local"]);
+      console.log(`uploaded trust/${f}`);
+    }
+    if (registry) {
+      const res = await fetch(`${registry.replace(/\/$/, "")}/v1/trust/refresh`, { method: "POST" });
+      const body = await res.text();
+      if (!res.ok) fail(`the registry did not re-sign its snapshot (HTTP ${res.status}): ${body}`);
+      console.log(`registry re-signed: ${body}`);
+    } else {
+      console.log("Now ask the registry to re-sign its snapshot: POST <registry>/v1/trust/refresh (or pass --registry).");
+    }
     break;
   }
   default:
     fail(
       "commands: add-publisher <publisher> <account> | issue-token <account> [--days N] | revoke-tokens <account> | " +
-        "add-key <publisher> <key> | revoke-key <publisher> <key> | list",
+        "list | upload-trust <trust-dir> [--registry <url>]",
     );
 }

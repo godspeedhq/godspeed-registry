@@ -43,6 +43,8 @@ codes! {
     digest_mismatch         => 422, "digest-mismatch";
     signature_invalid       => 422, "signature-invalid";
     key_not_registered      => 403, "key-not-registered";
+    trust_not_initialised   => 503, "trust-not-initialised";
+    trust_expired           => 503, "trust-expired";
     conflict                => 409, "published-differently";
     unavailable             => 503, "registry-unavailable";
 }

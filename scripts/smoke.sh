@@ -138,13 +138,32 @@ mkdir -p "$WORK/download"
 for f in manifest.toml $FILES; do
   curl -s -o "$WORK/download/$f" "$REGISTRY/packages/$NAME/$VERSION/$f"
 done
-if [ -n "$GODSPEED" ]; then
-  if "$GODSPEED" verify "$WORK/download" > /dev/null; then
-    pass=$((pass + 1)); echo "ok    the downloaded package passes godspeed verify"
-  else
-    fail=$((fail + 1)); echo "FAIL  the downloaded package does not verify"; "$GODSPEED" verify "$WORK/download"
-  fi
+if "$GODSPEED" verify "$WORK/download" > /dev/null; then
+  pass=$((pass + 1)); echo "ok    the downloaded package passes godspeed verify"
+else
+  fail=$((fail + 1)); echo "FAIL  the downloaded package does not verify"; "$GODSPEED" verify "$WORK/download"
 fi
+
+# The trust anchor: what a client does before installing. Each client starts with no trust state of its own.
+# fetch_check <wanted exit> <text> <description> -- <fetch arguments...>
+fetch_check() {
+  local want=$1 text=$2 what=$3
+  shift 4
+  local out got
+  out=$(GODSPEED_CONFIG_DIR="$WORK/client-$pass" "$GODSPEED" fetch --registry "$REGISTRY" "$@" 2>&1)
+  got=$?
+  if [ "$got" = "$want" ] && printf '%s' "$out" | tr -s ' \n' '  ' | grep -qF "$text"; then
+    pass=$((pass + 1)); echo "ok    $what"
+  else
+    fail=$((fail + 1)); echo "FAIL  $what (exit $got, wanted $want, looking for \"$text\"):"; printf '%s\n' "$out" | tail -8
+  fi
+}
+fetch_check 0 "Fetched $NAME@$VERSION" "fetch verifies the release through root, timestamp, snapshot, namespaces and index" \
+  -- "$NAME@$VERSION" --out "$WORK/fetched" --trust-root "${ROOT_DIGEST:?set ROOT_DIGEST}"
+fetch_check 27 "pinned with --trust-root" "fetch refuses a registry whose root is not the one pinned" \
+  -- "$NAME" --out "$WORK/fetched-2" --trust-root "sha256:$(printf '0%.0s' $(seq 64))"
+fetch_check 0 "First contact with" "without a pin, first contact trusts root 1 and says so" \
+  -- "$NAME" --out "$WORK/fetched-3"
 
 # Two publishes of one new version, at once: exactly one wins.
 NEXT="${VERSION%.*}.$(( ${VERSION##*.} + 100 ))"

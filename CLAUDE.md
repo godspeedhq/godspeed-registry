@@ -82,11 +82,16 @@ These hold after every change. A change that weakens one is wrong even if every 
    key is the maintainer, who uploaded it.
 6. **The database never holds a usable token.** Only SHA-256 hashes are stored. Tokens are printed once, at
    issue, and never logged.
-7. **Every release is signed by a key registered, and not revoked, for its namespace.** `manifest.sig` is a
-   required file; it must verify over the reserved manifest's exact bytes, and its key must be in
-   `signing_keys` for the publisher, unrevoked - checked when it is uploaded and again at finalisation. A
-   revoked key signs nothing new; nothing already published is ever altered by a revocation.
-8. **A timed-out or failed request is not proof of anything.** A storage or runtime error is reported as
+7. **Every release is signed by a key the signed namespaces metadata lists as active for its namespace.**
+   `manifest.sig` is a required file; it must verify over the reserved manifest's exact bytes, and its key
+   must be active for the publisher in `trust/namespaces.toml` - which the Worker verifies, through the
+   whole root chain, exactly as a client does - checked when it is uploaded and again at finalisation. Which
+   keys may sign for whom is decided ONLY there, signed offline: never in the database, never by the Worker.
+   A retired or revoked key signs nothing new; nothing already published is ever altered.
+8. **The Worker signs only snapshot and timestamp, with the one online key, and only the catalog object
+   signs them**, so their versions only increase. The snapshot is rebuilt from the bucket's actual index files,
+   never from a cached list. The Worker never holds, uploads or signs root or namespaces.
+9. **A timed-out or failed request is not proof of anything.** A storage or runtime error is reported as
    `registry-unavailable`, which the CLI must treat as an unknown outcome and reconcile by reading the index.
    Never report success before it is established, and never report a refusal for something that may have
    happened.
@@ -100,7 +105,7 @@ Keep these five apart, in code, in errors and in documentation:
 | concern | established by |
 |---|---|
 | content integrity | digests in the manifest, checked by `godspeed-package` |
-| publisher identity | publisher signatures (`manifest.sig`); key-to-namespace binding is the registry's own record until the trust anchor (below) |
+| publisher identity | publisher signatures (`manifest.sig`), by keys the offline-signed namespaces metadata lists |
 | registry authorisation | tokens and namespace membership (D1) |
 | local capability grants | the operating system, never the registry |
 | software safety | nobody: a verified package is not a safe package |
@@ -130,22 +135,23 @@ about which key signed a release.
 
 ---
 
-## Trust Model (Half Built)
+## Trust Model (Built)
 
-The registry follows The Update Framework's roles (root, delegated targets, snapshot, timestamp), as the
-design's section 6 describes.
+The registry follows The Update Framework's roles - root, namespaces (delegated targets), snapshot,
+timestamp - implemented directly, scoped to what the design needs, so the native package manager can verify
+without a heap. Formats: `docs/trust-metadata.md` in `godspeed-cli`; the code is `godspeed-package`'s
+`trust` module, shared by this Worker, `tools/trust` and the CLI. Do not adopt a TUF library that cannot run
+`no_std`, and never write a second implementation of these checks here.
 
-- **Built (slice 1):** every release is signed by its publisher, with a key registered for the namespace
-  (invariant 7).
-- **Not built (slice 2): the trust anchor.** Which key belongs to which namespace lives in this registry's
-  own database, so a compromised registry could register a key of its own and sign in someone's name.
-  Root metadata - each namespace's keys, signed offline by the root keys, which this Worker never holds -
-  closes that; snapshot and timestamp metadata, signed online, add freshness and stop rollback.
-- **The first public publish waits for slice 2.** Until then nothing in the API, the docs or a response may
-  imply that a client can establish a publisher's identity on its own.
-
-Implement the roles directly from the TUF specification, scoped to what the design needs, so that the
-native package manager can verify without a heap. Do not adopt a TUF library that cannot run `no_std`.
+- **Root and namespaces are signed offline** by the maintainer with `tools/trust` and uploaded with
+  `admin.mjs upload-trust`. A compromised registry cannot add or swap a publisher's key.
+- **Retire and revoke are different.** Retire (rotation): the key signs nothing new; what it published before
+  stays trusted. Revoke (compromise): nothing it signed is trusted.
+- **Snapshot and timestamp are signed online** by the catalog (invariant 8). A compromised online key can
+  delay or freeze what clients see for at most a timestamp's life (one day); it cannot forge a release.
+- **The first public publish waits only on deployment**: offline keys made and kept apart, root 1 signed by
+  its threshold and its digest published somewhere independent of the registry, the online key set as a
+  secret. Until then nothing may imply the official registry is live.
 
 ---
 
@@ -164,7 +170,7 @@ native package manager can verify without a heap. Do not adopt a TUF library tha
 
     npm install
     rustup target add wasm32-unknown-unknown
-    scripts/local-test.sh <package-dir> [path/to/godspeed]
+    scripts/local-test.sh <package-dir> path/to/godspeed
 
 `local-test.sh` wipes local state, creates publishers, starts `wrangler dev` with every binding local, and
 runs `scripts/smoke.sh`: the protocol end to end, including every refusal, a real publish verified by
@@ -188,6 +194,11 @@ runs `scripts/smoke.sh`: the protocol end to end, including every refusal, a rea
   without changing the package format.
 - Pin tooling exactly (`wrangler` in `package.json`, `worker-build` in `wrangler.toml`): a build of a given
   commit must use the same tools every time.
+- **Offline keys never touch the registry**, a CI runner, or this repository. `tools/trust` runs on the
+  maintainer's machine; only its signed output is uploaded. Never upload `snapshot` or `timestamp` by hand:
+  they are the catalog's alone.
+- `namespaces` and `root` expire; publishing and fetching stop when they do, by design. Re-sign them before
+  that, and never extend an expiry to make a failure go away.
 
 ---
 
