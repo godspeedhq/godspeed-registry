@@ -11,6 +11,9 @@
 //! local development and as a fallback; in production the custom domain serves the bucket directly, so
 //! downloads keep working when this Worker does not.
 
+// Nothing here needs `unsafe`; `forbid` (unlike `deny`) cannot be switched off further in.
+#![forbid(unsafe_code)]
+
 mod api;
 mod auth;
 mod keys;

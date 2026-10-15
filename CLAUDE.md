@@ -163,6 +163,9 @@ runs `scripts/smoke.sh`: the protocol end to end, including every refusal, a rea
 
 - Every new refusal gets a check in `smoke.sh`; every new invariant gets a check that would fail without it.
 - Tests run against local bindings only. **Never point a test at the production buckets or database.**
+- `scripts/cli-test.sh` drives the registry with the real `godspeed` CLI; a protocol change is not done until
+  it passes too.
+- The crate is `#![forbid(unsafe_code)]`: nothing here needs it, and `forbid` cannot be switched off locally.
 - Host unit tests (`cargo test`) cover the pure parts: time formatting, key layout, token hashing, error
   codes.
 

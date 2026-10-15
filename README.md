@@ -44,6 +44,7 @@ development.
     scripts/admin.mjs add publishers, issue and revoke tokens (phase 1: by hand)
     scripts/smoke.sh  the protocol end to end against a running registry
     scripts/local-test.sh   all of it from nothing, locally
+    scripts/cli-test.sh     the real `godspeed` CLI logging in and publishing to it, locally
 
 It depends on `godspeed-package` by path (`../godspeed-cli/crates/godspeed-package`), so check the two
 repositories out side by side. That becomes a git dependency once the crate is on `godspeed-cli`'s main
@@ -59,6 +60,12 @@ branch.
 creates publishers `alice` and `bob` with fresh tokens, starts `wrangler dev` (every binding local), and
 runs `scripts/smoke.sh`: 26 checks, from refused tokens to a concurrent reservation race, ending with the
 downloaded package passing `godspeed verify`. Nothing reaches Cloudflare.
+
+    GODSPEED_OS=<GodspeedOS checkout> scripts/cli-test.sh path/to/godspeed
+
+drives the developer's side instead: `godspeed login`, `whoami`, `publish` (twice - the second must report
+the identical release as already published), a refused republish under a published version, a refused
+foreign namespace, and `logout`. 11 checks.
 
 ## Deploying (maintainer)
 
