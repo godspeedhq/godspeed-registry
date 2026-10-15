@@ -19,8 +19,12 @@ rm -rf .wrangler/state
 $WRANGLER d1 migrations apply godspeed-registry --local > /dev/null
 node scripts/admin.mjs add-publisher alice alice > /dev/null
 node scripts/admin.mjs add-publisher bob bob > /dev/null
-ALICE_TOKEN=$(node scripts/admin.mjs issue-token alice --days 1 | tail -1)
-BOB_TOKEN=$(node scripts/admin.mjs issue-token bob --days 1 | tail -1)
+# Tokens as publishers make them (`godspeed token new`); the maintainer approves only their fingerprints.
+fingerprint() { printf 'sha256:%s' "$(printf '%s' "$1" | sha256sum | cut -d' ' -f1)"; }
+ALICE_TOKEN=$("$GODSPEED" token new 2> /dev/null)
+BOB_TOKEN=$("$GODSPEED" token new 2> /dev/null)
+node scripts/admin.mjs approve-token alice "$(fingerprint "$ALICE_TOKEN")" --days 1 > /dev/null
+node scripts/admin.mjs approve-token bob "$(fingerprint "$BOB_TOKEN")" --days 1 > /dev/null
 
 # alice's signing key, made the way a publisher makes it, and a rogue one nobody lists.
 export GODSPEED_CONFIG_DIR="$WORK/alice-config"

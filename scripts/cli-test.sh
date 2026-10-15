@@ -42,7 +42,6 @@ rm -rf .wrangler/state
 $WRANGLER d1 migrations apply godspeed-registry --local > /dev/null
 node scripts/admin.mjs add-publisher alice alice > /dev/null
 node scripts/admin.mjs add-publisher bob bob > /dev/null
-TOKEN=$(node scripts/admin.mjs issue-token alice --days 1 | tail -1)
 # A trust anchor that, to start with, lists only a key of bob's: alice has none yet.
 GODSPEED_CONFIG_DIR="$WORK/bob-config" "$GODSPEED" key generate > /dev/null
 # shellcheck source=trust-setup.sh
@@ -62,10 +61,17 @@ cd greeter
 sed -i 's/^# publisher = "your-name"/publisher = "alice"/' godspeed.toml
 
 check 18 "not logged in" "publish before logging in is refused, before building" -- "$GODSPEED" publish --registry "$URL"
-check 18 "not one the registry issued" "a token the registry never issued is refused at login" -- \
-  sh -c "echo gsp_0000000000000000 | '$GODSPEED' login --registry '$URL'"
-check 0 "Logged in to $URL as alice" "login with the issued token" -- \
-  sh -c "echo '$TOKEN' | '$GODSPEED' login --registry '$URL'"
+check 18 "has not approved this token" "login --with-token refuses a token nobody approved, and stores nothing" -- \
+  sh -c "echo gsp_0000000000000000 | '$GODSPEED' login --with-token --registry '$URL'"
+
+# The publisher makes their token; the maintainer approves only its fingerprint.
+check 0 "Send the registry maintainer this fingerprint" "login makes a token here and prints its fingerprint" -- \
+  "$GODSPEED" login --registry "$URL"
+FINGERPRINT=$("$GODSPEED" login 2> /dev/null | grep -o 'sha256:[0-9a-f]\{64\}' | head -1)
+check 18 "has not approved this token" "before approval, whoami says the token is not approved" -- "$GODSPEED" whoami
+check 0 "waiting for the registry maintainer" "login again before approval keeps the same token" -- "$GODSPEED" login
+(cd "$REGDIR" && node scripts/admin.mjs approve-token alice "$FINGERPRINT" --days 1 > /dev/null)
+check 0 "Already logged in to $URL as alice" "once the fingerprint is approved, login confirms the account" -- "$GODSPEED" login
 check 0 "may publish under: alice/" "whoami names the account and its namespaces" -- "$GODSPEED" whoami
 
 # Signing: no key, then a key the signed namespaces do not list, then a listed one.

@@ -50,7 +50,7 @@ directly, so downloads - and their verification - keep working when this Worker 
     src/keys.rs         where everything lives in the bucket
     migrations/         the D1 schema
     tools/trust/        godspeed-trust: the maintainer's OFFLINE tool for root and namespaces
-    scripts/admin.mjs   publishers and tokens (by hand), and upload-trust
+    scripts/admin.mjs   publishers, token approvals and upload-trust (run by the admin and deploy workflows)
     scripts/smoke.sh    the protocol end to end against a running registry
     scripts/local-test.sh   all of it from nothing, locally
     scripts/cli-test.sh     the real `godspeed` CLI against it, locally
@@ -74,7 +74,8 @@ Nothing reaches Cloudflare.
 - `local-test.sh` runs `scripts/smoke.sh`: **33 checks**, from refused tokens and signatures to a concurrent
   reservation race and `godspeed fetch` verifying a release through the whole chain (and refusing a root not
   the one pinned).
-- `cli-test.sh` drives the developer's side: **23 checks**, from login and an unlisted key to publish,
+- `cli-test.sh` drives the developer's side: **26 checks**, from making a token and having its fingerprint
+  approved, through an unlisted signing key, to publish,
   `fetch`, a key retired (its earlier release still verifies; it signs nothing new; a new key takes over), a
   key revoked (what it signed is refused), and logout.
 
@@ -104,17 +105,16 @@ their own machine: only Rust, for `godspeed-trust`. Not done yet. Once, in order
    enabled` and `REGISTRY_URL` (the Worker's URL).
 7. Merge to `main`, or run the workflow by hand: it applies migrations, deploys, sets the online key, uploads
    `trust/` and has the registry re-sign its snapshot.
-8. Publishers and tokens: `node scripts/admin.mjs add-publisher <publisher> <account> --remote`, then
-   `issue-token <account> --remote`, and hand the token over privately. (This is the one task still run
-   locally with Node; see the note below.)
-9. Point the public bucket's custom domain at it for reads. The r2.dev URL is for development only.
+8. Point the public bucket's custom domain at it for reads. The r2.dev URL is for development only.
 
-From then on, a key change is: `godspeed-trust namespaces add | retire | revoke`, `sign`, commit, merge.
+From then on, everything is a pull request or a button in the Actions tab:
+
+- **A new publisher:** they run `godspeed login --registry <url>` and send you the fingerprint it prints, with
+  their account name. Run the **admin** workflow: `add-publisher` (publisher, account), then `approve-token`
+  (account, fingerprint, days). Their token was made on their machine and never reaches you - only its
+  fingerprint does, and that is all the registry stores, so nothing secret appears in any log.
+- **A key change:** `godspeed-trust namespaces add | retire | revoke`, `sign`, commit `trust/`, merge.
+- **Revoking someone's tokens:** the admin workflow's `revoke-tokens`.
 
 Re-sign `namespaces` before it expires (a year by default) and `root` before its expiry; publishing and
 fetching stop when either lapses, rather than continuing on expired trust.
-
-**Still local, with Node: issuing publisher tokens.** A token is a secret, so it cannot be issued by a
-workflow whose logs anyone with read access can see. Moving this off Node is a separate decision - either
-`godspeed-trust` issuing tokens through Cloudflare's API, or publishers making their own token and sending
-only its hash, the way SSH keys work.

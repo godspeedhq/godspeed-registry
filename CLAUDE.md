@@ -80,8 +80,9 @@ These hold after every change. A change that weakens one is wrong even if every 
    **Before anyone but the maintainer holds a publisher token, staging moves to a separate private bucket**
    (`godspeedos-staging`, never given a public domain). Until then the only person who can know a staged
    key is the maintainer, who uploaded it.
-6. **The database never holds a usable token.** Only SHA-256 hashes are stored. Tokens are printed once, at
-   issue, and never logged.
+6. **No one but the publisher ever holds their token.** Publishers make tokens on their own machines and send
+   only the fingerprint (the SHA-256), which the maintainer approves; the database stores only that. Never
+   add a way to issue, print, email or log a token on the registry's side.
 7. **Every release is signed by a key the signed namespaces metadata lists as active for its namespace.**
    `manifest.sig` is a required file; it must verify over the reserved manifest's exact bytes, and its key
    must be active for the publisher in `trust/namespaces.toml` - which the Worker verifies, through the
@@ -190,8 +191,9 @@ runs `scripts/smoke.sh`: the protocol end to end, including every refusal, a rea
 
 - Deploying, creating buckets and databases, and issuing tokens (`--remote`) act on the maintainer's
   Cloudflare account. **Do them only when the maintainer asks**, and say exactly what will change first.
-- Publisher approval is by hand in phase 1 (`scripts/admin.mjs`). Self-service registration can come later
-  without changing the package format.
+- Publisher and token approval is by hand in phase 1, through the `admin` workflow (`scripts/admin.mjs` on
+  GitHub's runner): nothing it handles is secret. Self-service registration can come later without changing
+  the package format.
 - Pin tooling exactly (`wrangler` in `package.json`, `worker-build` in `wrangler.toml`): a build of a given
   commit must use the same tools every time.
 - **Offline keys never touch the registry**, a CI runner, or this repository. `tools/trust` runs on the

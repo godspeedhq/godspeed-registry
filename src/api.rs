@@ -30,6 +30,7 @@ macro_rules! codes {
 
 codes! {
     unauthenticated         => 401, "unauthenticated";
+    token_not_approved      => 401, "token-not-approved";
     token_expired           => 401, "token-expired";
     namespace_not_yours     => 403, "namespace-not-yours";
     not_found               => 404, "not-found";

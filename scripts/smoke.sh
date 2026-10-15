@@ -57,7 +57,7 @@ echo "Publishing $NAME@$VERSION to $REGISTRY"
 call GET "$REGISTRY/v1/whoami" ""
 expect 401 unauthenticated "no token is refused"
 call GET "$REGISTRY/v1/whoami" "gsp_not-a-real-token"
-expect 401 unauthenticated "an unknown token is refused"
+expect 401 token-not-approved "a token the maintainer never approved is refused, as not approved"
 call GET "$REGISTRY/v1/whoami" "$ALICE_TOKEN"
 expect 200 "" "whoami names the account"
 [ "$(printf '%s' "$BODY" | json "d['publishers']")" = "['$PUBLISHER']" ] || { fail=$((fail + 1)); echo "FAIL  whoami publishers: $BODY"; }

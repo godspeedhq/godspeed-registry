@@ -1,23 +1,23 @@
 #!/usr/bin/env node
-// Registry administration, phase 1: approve publishers and issue tokens by hand, and upload the trust
-// metadata signed offline with `godspeed-trust`.
+// Registry administration, phase 1: approve publishers and their tokens by hand, and upload the trust
+// metadata signed offline with `godspeed-trust`. In production these run in the `admin` and `deploy`
+// workflows, so the maintainer needs neither Node nor wrangler locally.
 //
 //   node scripts/admin.mjs add-publisher <publisher> <account>                  [--remote]
-//   node scripts/admin.mjs issue-token   <account> [--days 90]                  [--remote]
+//   node scripts/admin.mjs approve-token <account> <fingerprint> [--days 90]    [--remote]
 //   node scripts/admin.mjs revoke-tokens <account>                              [--remote]
 //   node scripts/admin.mjs list                                                 [--remote]
 //   node scripts/admin.mjs upload-trust  <trust-dir> [--registry <url>]         [--remote]
 //
 // Run `npm install` first (it pins wrangler). Without --remote it acts on the local development database and
-// bucket that `wrangler dev` uses. A token is printed once and never stored: the database keeps only its
-// SHA-256.
+// bucket that `wrangler dev` uses. Tokens are made by publishers (`godspeed login`); this only ever sees, and
+// the database only ever holds, a token's SHA-256.
 //
 // Which keys may sign for a publisher is NOT kept here: it is the namespaces document, signed offline with
 // `godspeed-trust` (tools/trust) on the machine that holds the offline keys. `upload-trust` only copies
 // what that tool signed into the bucket - it signs nothing - and then asks the registry to re-sign its
 // snapshot, so clients see the new document at once.
 
-import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -89,17 +89,22 @@ switch (command) {
     console.log(`Their signing key goes in the signed namespaces metadata: godspeed-trust namespaces add ${publisher} <key>`);
     break;
   }
-  case "issue-token": {
+  case "approve-token": {
+    // The publisher made the token on their own machine (`godspeed login`) and sent only its fingerprint, the
+    // SHA-256 the registry stores. Nothing secret reaches the maintainer, this script, or a workflow log.
     const account = name(rest[0], "account");
+    const fingerprint = rest[1] ?? "";
+    const m = /^(?:sha256:)?([0-9a-f]{64})$/.exec(fingerprint);
+    if (!m) fail(`"${fingerprint}" is not a token fingerprint: expected sha256: and 64 lowercase hex digits (from \`godspeed login\`)`);
+    const hash = m[1]; // safe to interpolate: the pattern admits only hex digits
     if (!Number.isInteger(days) || days < 1 || days > 366) fail("--days is a whole number from 1 to 366");
-    const token = "gsp_" + randomBytes(32).toString("hex");
-    const hash = createHash("sha256").update(token).digest("hex");
     const expires = iso(new Date(Date.now() + days * 86_400_000));
     const found = sql(`SELECT name FROM accounts WHERE name = '${account}'`)[0].results;
     if (found.length === 0) fail(`no account ${account}; add it with add-publisher first`);
+    const existing = sql(`SELECT account FROM tokens WHERE hash = '${hash}'`)[0].results;
+    if (existing.length > 0) fail(`that token is already approved, for ${existing[0].account}; a token is approved once`);
     sql(`INSERT INTO tokens (hash, account, created, expires) VALUES ('${hash}', '${account}', '${now}', '${expires}')`);
-    console.log(`Token for ${account}, expiring ${expires}. It is shown once; the registry keeps only its hash.`);
-    console.log(token);
+    console.log(`Approved sha256:${hash} for ${account}, until ${expires}.`);
     break;
   }
   case "revoke-tokens": {
@@ -145,7 +150,7 @@ switch (command) {
   }
   default:
     fail(
-      "commands: add-publisher <publisher> <account> | issue-token <account> [--days N] | revoke-tokens <account> | " +
+      "commands: add-publisher <publisher> <account> | approve-token <account> <fingerprint> [--days N] | revoke-tokens <account> | " +
         "list | upload-trust <trust-dir> [--registry <url>]",
     );
 }

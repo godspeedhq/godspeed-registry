@@ -1,8 +1,10 @@
-//! Who is asking, and may they publish here. Phase 1: hand-issued API tokens (`docs/publishing-design.md`
-//! section 4 in the CLI repository).
+//! Who is asking, and may they publish here. Phase 1: publisher-made tokens, approved by hand
+//! (`docs/publishing-design.md` section 4 in the CLI repository).
 //!
-//! Only a token's SHA-256 is stored, so the database cannot leak a usable token. A token belongs to an
-//! account; an account may publish under each namespace it is a member of. Authentication says nothing
+//! A publisher makes their token on their own machine (`godspeed login`) and sends the maintainer only its
+//! fingerprint - its SHA-256 - which the maintainer approves for their account. So the token itself never
+//! travels to anyone, and only its SHA-256 is stored: the database cannot leak a usable token. A token belongs
+//! to an account; an account may publish under each namespace it is a member of. Authentication says nothing
 //! about signing - that is a separate check, on a separate key.
 
 use crate::api::{ApiError, ApiResult};
@@ -44,7 +46,7 @@ pub fn bearer(req: &Request) -> Option<String> {
 pub async fn authenticate(db: &D1Database, req: &Request, now: &str) -> worker::Result<ApiResult<Caller>> {
     let Some(token) = bearer(req) else {
         return Ok(Err(ApiError::unauthenticated(
-            "No publisher token. Run `godspeed login` with the token you were issued.",
+            "No publisher token. Run `godspeed login`, and have the registry maintainer approve its fingerprint.",
         )));
     };
     let token_hash = hash_token(&token);
@@ -54,9 +56,9 @@ pub async fn authenticate(db: &D1Database, req: &Request, now: &str) -> worker::
         .first(None)
         .await?;
     let Some(row) = row else {
-        return Ok(Err(ApiError::unauthenticated(
-            "This token is not one the registry issued.",
-        )));
+        return Ok(Err(ApiError::token_not_approved(format!(
+            "The registry maintainer has not approved this token (fingerprint sha256:{token_hash}) for any account."
+        ))));
     };
     if let Some(when) = row.revoked {
         return Ok(Err(ApiError::unauthenticated(format!(
