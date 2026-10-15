@@ -14,12 +14,12 @@ command = "cargo install -q worker-build@0.8.7 && worker-build --release"
 binding = "PACKAGES"
 bucket_name = "godspeedos-packages"
 
-# Publishers, accounts, memberships and token hashes. Create with `npx wrangler d1 create godspeed-registry`
-# and put the id it prints here. Local development (`wrangler dev`) works with this placeholder.
+# Publishers, accounts, memberships and token hashes: the production D1 database (its id is not a secret).
+# Local development (`wrangler dev --local`) never touches it.
 [[d1_databases]]
 binding = "DB"
 database_name = "godspeed-registry"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "d76e6848-d3bf-4517-af07-0ef2ec2d8217"
 migrations_dir = "migrations"
 
 # One object per package: the authority on what is published and what is being published. And one catalog,
