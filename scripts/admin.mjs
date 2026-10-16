@@ -126,6 +126,10 @@ switch (command) {
   }
   case "upload-trust": {
     const dir = rest[0] ?? fail("upload-trust <trust-dir>: the directory godspeed-trust wrote");
+    // Checked before anything is uploaded, so a mistyped URL leaves nothing half done.
+    if (registry && !/^https?:\/\/[^\s/]+/.test(registry)) {
+      fail(`--registry ${JSON.stringify(registry)} is not a URL; it must start with https:// (in the workflows, check REGISTRY_URL in both the repository's variables and the production environment's: the environment's wins)`);
+    }
     // Only the offline documents. Snapshot and timestamp are the registry's to sign, never uploaded.
     const files = [];
     for (const f of ["namespaces.toml", "namespaces.sig"]) if (existsSync(join(dir, f))) files.push(f);
@@ -139,7 +143,9 @@ switch (command) {
       console.log(`uploaded trust/${f}`);
     }
     if (registry) {
-      const res = await fetch(`${registry.replace(/\/$/, "")}/v1/trust/refresh`, { method: "POST" });
+      const url = `${registry.replace(/\/$/, "")}/v1/trust/refresh`;
+      const res = await fetch(url, { method: "POST" }).catch((e) =>
+        fail(`could not reach ${url} (${e.cause?.code ?? e.message}); the files are uploaded, so run this again once it is reachable`));
       const body = await res.text();
       if (!res.ok) fail(`the registry did not re-sign its snapshot (HTTP ${res.status}): ${body}`);
       console.log(`registry re-signed: ${body}`);
