@@ -1,0 +1,145 @@
+name: ci
+
+# Two jobs:
+#
+#   rust  - formatting, lints (the Worker for wasm32, the maintainer's tool for the host) and unit tests.
+#   e2e   - the registry as a client meets it, under `wrangler dev` with every binding local: the protocol
+#           suite (scripts/local-test.sh, 33 checks) and the real `godspeed` CLI driving it
+#           (scripts/cli-test.sh, 23 checks: publish, fetch through the trust anchor, retire, revoke).
+#
+# The registry's package contract comes from godspeed-cli (crates/godspeed-package), checked out beside it
+# at CLI_REF so the path dependency resolves exactly as on a developer's machine.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['*.md', 'LICENSE']
+  pull_request:
+    paths-ignore: ['*.md', 'LICENSE']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The godspeed-cli revision the package contract is taken from: its feature branch until that is merged,
+  # then main.
+  CLI_REF: feat/cli-foundation
+  # The GodspeedOS release the end-to-end tests build services against.
+  OS_REF: v0.28.0
+
+jobs:
+  rust:
+    name: Format, lint, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: godspeed-registry
+      - uses: actions/checkout@v5
+        with:
+          repository: godspeedhq/godspeed-cli
+          ref: ${{ env.CLI_REF }}
+          path: godspeed-cli
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+          rustup default stable
+      - name: Formatting
+        working-directory: godspeed-registry
+        run: cargo fmt --all --check
+      - name: Lints
+        working-directory: godspeed-registry
+        run: |
+          cargo clippy --locked -p godspeed-registry --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy --locked -p godspeed-trust --all-targets -- -D warnings
+      - name: Unit tests
+        working-directory: godspeed-registry
+        run: cargo test --locked --workspace
+      # The signed trust metadata committed under trust/ must verify as a client would verify it - every root
+      # in the chain, and namespaces - or it cannot be merged, and so never deployed.
+      - name: Signed trust metadata verifies
+        working-directory: godspeed-registry
+        run: |
+          if [ -d trust ]; then
+            cargo run --locked -q -p godspeed-trust -- verify --dir trust
+          else
+            echo "No trust/ directory yet: nothing to verify."
+          fi
+      - name: No key files committed
+        working-directory: godspeed-registry
+        run: |
+          if git ls-files | grep -E '\.key$'; then
+            echo "::error::a .key file is committed (above). Remove it from history and treat that key as compromised."
+            exit 1
+          fi
+
+  e2e:
+    name: End to end, under wrangler dev
+    needs: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: godspeed-registry
+      - uses: actions/checkout@v5
+        with:
+          repository: godspeedhq/godspeed-cli
+          ref: ${{ env.CLI_REF }}
+          path: godspeed-cli
+      - uses: actions/checkout@v5
+        with:
+          repository: godspeedhq/godspeed-os
+          ref: ${{ env.OS_REF }}
+          path: godspeed-os
+
+      - name: Install Rust (stable, wasm32, and the toolchain GodspeedOS pins)
+        run: |
+          rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+          rustup default stable
+          read -r channel targets < <(python3 - <<'EOF'
+          import tomllib
+          t = tomllib.load(open("godspeed-os/rust-toolchain.toml", "rb"))["toolchain"]
+          print(t["channel"], ",".join(t.get("targets", [])))
+          EOF
+          )
+          rustup toolchain install "$channel" --profile minimal --target "$targets"
+          cargo install --locked -q worker-build@0.8.7
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Install the pinned wrangler
+        working-directory: godspeed-registry
+        run: npm ci --no-fund --no-audit
+
+      - name: Build the godspeed CLI
+        working-directory: godspeed-cli
+        run: cargo build --locked --release
+
+      - name: A package to publish
+        env:
+          GODSPEED_OS: ${{ github.workspace }}/godspeed-os
+          GODSPEED_CONFIG_DIR: ${{ runner.temp }}/package-config
+        run: |
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/godspeed-cli/target/release/godspeed" new service hello
+          cd hello
+          sed -i 's/^# publisher = "your-name"/publisher = "alice"/' godspeed.toml
+          "$GITHUB_WORKSPACE/godspeed-cli/target/release/godspeed" package
+
+      - name: Protocol (scripts/local-test.sh)
+        working-directory: godspeed-registry
+        run: bash scripts/local-test.sh "$RUNNER_TEMP/hello/target/package/alice-hello-0.1.0" "$GITHUB_WORKSPACE/godspeed-cli/target/release/godspeed"
+
+      - name: The CLI against the registry (scripts/cli-test.sh)
+        working-directory: godspeed-registry
+        env:
+          GODSPEED_OS: ${{ github.workspace }}/godspeed-os
+        run: bash scripts/cli-test.sh "$GITHUB_WORKSPACE/godspeed-cli/target/release/godspeed"

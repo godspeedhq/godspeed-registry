@@ -1,0 +1,27 @@
+[package]
+name = "godspeed-registry"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "The Godspeed package registry's publishing API: a Cloudflare Worker in front of R2"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = { version = "0.8", features = ["d1"] }
+godspeed-package = { path = "../godspeed-cli/crates/godspeed-package", features = ["toml"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+sha2 = "0.10"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+# The Worker, and the maintainer's offline tool for trust metadata (host only).
+[workspace]
+members = [".", "tools/trust"]

@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings everywhere: sh rejects a CR at the end of a line.
+*.sh text eol=lf
+# Signed trust metadata: its exact bytes are what the signatures and pinned digests cover, so git must never
+# convert its line endings.
+trust/** -text

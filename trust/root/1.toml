@@ -1,0 +1,15 @@
+format = 1
+type = "root"
+version = 1
+expires = "2028-10-15T00:00:00Z"
+role = "root 2"
+key = "root ed25519:299814b701beb971cc1911c8765e189a47b5202c9b186b773faa46e851dc217d"
+key = "root ed25519:6a10debd6e6c1a26500298ef42ef8e83c351149161d5f4f37d6a9df1d8a2ba89"
+key = "root ed25519:ac376ba8bb2a7a24303691856f6776a56458db4c4cbfcae9bdcd219d66563258"
+role = "namespaces 1"
+key = "namespaces ed25519:ac606739713b3cb8c38af09c381cfce3b7f610b9b2e789d0d2009a5f39aef51c"
+key = "namespaces ed25519:f3ae2475a08593fe8faaedf2157742cefd8e776495216b89b97e3309f85f45fa"
+role = "snapshot 1"
+key = "snapshot ed25519:dfe9cbc64fc596f3732f573b6d091debb77eb2b5ad0c645f75f06d7157a04289"
+role = "timestamp 1"
+key = "timestamp ed25519:dfe9cbc64fc596f3732f573b6d091debb77eb2b5ad0c645f75f06d7157a04289"

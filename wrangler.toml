@@ -1,0 +1,47 @@
+name = "godspeed-registry"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-10-01"
+
+[build]
+# Exact version: `^` is an escape character to cmd.exe, and a pinned build tool is reproducible anyway.
+command = "cargo install -q worker-build@0.8.7 && worker-build --release"
+
+# Public: published packages and the index, served read-only by the bucket's own domain - and, for now,
+# uploads in progress under its `staging/` prefix (src/keys.rs says why that is acceptable, and when it must
+# move to a private bucket). Give the bucket a lifecycle rule deleting objects under `staging/` after 1 day,
+# which sweeps abandoned uploads.
+[[r2_buckets]]
+binding = "PACKAGES"
+bucket_name = "godspeedos-packages"
+
+# Publishers, accounts, memberships and token hashes: the production D1 database (its id is not a secret).
+# Local development (`wrangler dev --local`) never touches it.
+[[d1_databases]]
+binding = "DB"
+database_name = "godspeed-registry"
+database_id = "d76e6848-d3bf-4517-af07-0ef2ec2d8217"
+migrations_dir = "migrations"
+
+# One object per package: the authority on what is published and what is being published. And one catalog,
+# which alone signs the snapshot and timestamp, so their versions only ever increase.
+[durable_objects]
+bindings = [
+  { name = "PACKAGE", class_name = "PackageObject" },
+  { name = "CATALOG", class_name = "Catalog" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PackageObject"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Catalog"]
+
+# Re-sign the timestamp (valid one day) well before it expires, even when nothing is published.
+[triggers]
+crons = ["17 */6 * * *"]
+
+# Secret, never in this file: ONLINE_SIGNING_KEY, the 64-hex-digit seed of the key the root lists for the
+# snapshot and timestamp roles. Set it with `npx wrangler secret put ONLINE_SIGNING_KEY`; for `wrangler dev`,
+# in .dev.vars (git-ignored). Make it with `godspeed-trust keygen`, on a machine you trust.

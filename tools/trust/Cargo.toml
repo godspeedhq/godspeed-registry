@@ -1,0 +1,18 @@
+[package]
+name = "godspeed-trust"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-only"
+description = "The registry maintainer's offline tool: root and namespaces trust metadata, and their signatures"
+publish = false
+
+[[bin]]
+name = "godspeed-trust"
+path = "src/main.rs"
+
+[dependencies]
+godspeed-package = { path = "../../../godspeed-cli/crates/godspeed-package", features = ["std"] }
+clap = { version = "4.5", features = ["derive"] }
+getrandom = "0.2"
+# Reads a pasted key without echoing it.
+rpassword = "7"

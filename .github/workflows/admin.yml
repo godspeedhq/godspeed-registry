@@ -1,0 +1,75 @@
+name: admin
+
+# Registry administration, run by hand from the Actions tab - so the maintainer needs neither Node nor wrangler
+# on their own machine. Nothing it handles is secret: publishers make their own tokens and send only the
+# fingerprint (`godspeed login` prints it), so approving one can safely appear in this workflow's log.
+#
+#   add-publisher   publisher, account    the account may publish under the namespace
+#   approve-token   account, fingerprint  the token with that fingerprint authenticates as the account
+#                   (days: how long it is valid, 1-366)
+#   revoke-tokens   account               every token of the account stops working
+#   list                                  publishers, accounts, and how many live tokens each has
+#
+# Which signing keys belong to a publisher is NOT here: that is trust/namespaces.toml, signed offline.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        required: true
+        type: choice
+        options: [list, add-publisher, approve-token, revoke-tokens]
+      publisher:
+        description: Publisher (namespace), for add-publisher
+        required: false
+      account:
+        description: Account, for add-publisher, approve-token and revoke-tokens
+        required: false
+      fingerprint:
+        description: Token fingerprint (sha256:...), for approve-token
+        required: false
+      days:
+        description: Days the approved token is valid
+        required: false
+        default: "90"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admin
+  cancel-in-progress: false
+
+jobs:
+  admin:
+    name: ${{ inputs.action }}
+    if: vars.REGISTRY_DEPLOY == 'enabled'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Inputs reach the script through the environment, never pasted into the shell, so no input can inject
+      # a command; admin.mjs validates each against the package contract's rules besides.
+      ACTION: ${{ inputs.action }}
+      PUBLISHER: ${{ inputs.publisher }}
+      ACCOUNT: ${{ inputs.account }}
+      FINGERPRINT: ${{ inputs.fingerprint }}
+      DAYS: ${{ inputs.days }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Install the pinned wrangler
+        run: npm ci --no-fund --no-audit
+      - name: Run
+        run: |
+          case "$ACTION" in
+            list)          node scripts/admin.mjs list --remote ;;
+            add-publisher) node scripts/admin.mjs add-publisher "$PUBLISHER" "$ACCOUNT" --remote ;;
+            approve-token) node scripts/admin.mjs approve-token "$ACCOUNT" "$FINGERPRINT" --days "$DAYS" --remote ;;
+            revoke-tokens) node scripts/admin.mjs revoke-tokens "$ACCOUNT" --remote ;;
+            *) echo "::error::unknown action $ACTION"; exit 1 ;;
+          esac
