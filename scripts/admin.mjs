@@ -19,8 +19,7 @@
 // snapshot, so clients see the new document at once.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,15 +61,17 @@ function wrangler(argv, capture = true) {
   });
 }
 
-// Statements go through a file, not the command line, so no shell ever re-splits or re-quotes them.
+// A statement goes as one argument to the pinned wrangler, run with no shell (above), so nothing re-splits or
+// re-quotes it; every value in one is checked by name() or is a hex digest, so none can carry SQL. Not
+// --file: against the real database, that goes through D1's import route, which prints progress to stdout
+// and returns no rows.
 function sql(statement) {
-  const dir = mkdtempSync(join(tmpdir(), "godspeed-admin-"));
-  const file = join(dir, "statement.sql");
-  writeFileSync(file, statement);
+  const out = wrangler(["d1", "execute", "godspeed-registry", remote ? "--remote" : "--local", "--json", "--command", statement]);
   try {
-    return JSON.parse(wrangler(["d1", "execute", "godspeed-registry", remote ? "--remote" : "--local", "--json", "--file", file]));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    return JSON.parse(out);
+  } catch {
+    fail(`wrangler did not answer in JSON:
+${out}`);
   }
 }
 
@@ -126,6 +127,10 @@ switch (command) {
   }
   case "upload-trust": {
     const dir = rest[0] ?? fail("upload-trust <trust-dir>: the directory godspeed-trust wrote");
+    // Checked before anything is uploaded, so a mistyped URL leaves nothing half done.
+    if (registry && !/^https?:\/\/[^\s/]+/.test(registry)) {
+      fail(`--registry ${JSON.stringify(registry)} is not a URL; it must start with https:// (in the workflows, check REGISTRY_URL in both the repository's variables and the production environment's: the environment's wins)`);
+    }
     // Only the offline documents. Snapshot and timestamp are the registry's to sign, never uploaded.
     const files = [];
     for (const f of ["namespaces.toml", "namespaces.sig"]) if (existsSync(join(dir, f))) files.push(f);
@@ -139,7 +144,9 @@ switch (command) {
       console.log(`uploaded trust/${f}`);
     }
     if (registry) {
-      const res = await fetch(`${registry.replace(/\/$/, "")}/v1/trust/refresh`, { method: "POST" });
+      const url = `${registry.replace(/\/$/, "")}/v1/trust/refresh`;
+      const res = await fetch(url, { method: "POST" }).catch((e) =>
+        fail(`could not reach ${url} (${e.cause?.code ?? e.message}); the files are uploaded, so run this again once it is reachable`));
       const body = await res.text();
       if (!res.ok) fail(`the registry did not re-sign its snapshot (HTTP ${res.status}): ${body}`);
       console.log(`registry re-signed: ${body}`);
