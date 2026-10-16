@@ -19,8 +19,7 @@
 // snapshot, so clients see the new document at once.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,15 +61,17 @@ function wrangler(argv, capture = true) {
   });
 }
 
-// Statements go through a file, not the command line, so no shell ever re-splits or re-quotes them.
+// A statement goes as one argument to the pinned wrangler, run with no shell (above), so nothing re-splits or
+// re-quotes it; every value in one is checked by name() or is a hex digest, so none can carry SQL. Not
+// --file: against the real database, that goes through D1's import route, which prints progress to stdout
+// and returns no rows.
 function sql(statement) {
-  const dir = mkdtempSync(join(tmpdir(), "godspeed-admin-"));
-  const file = join(dir, "statement.sql");
-  writeFileSync(file, statement);
+  const out = wrangler(["d1", "execute", "godspeed-registry", remote ? "--remote" : "--local", "--json", "--command", statement]);
   try {
-    return JSON.parse(wrangler(["d1", "execute", "godspeed-registry", remote ? "--remote" : "--local", "--json", "--file", file]));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    return JSON.parse(out);
+  } catch {
+    fail(`wrangler did not answer in JSON:
+${out}`);
   }
 }
 
