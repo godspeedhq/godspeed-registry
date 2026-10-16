@@ -57,8 +57,8 @@ directly, so downloads - and their verification - keep working when this Worker 
     scripts/trust-setup.sh  a local trust anchor, for the two tests above
 
 It depends on `godspeed-package` by path (`../godspeed-cli/crates/godspeed-package`), so check the two
-repositories out side by side. That becomes a git dependency once the crate is on `godspeed-cli`'s main
-branch.
+repositories out side by side, with `godspeed-cli` at the release CI uses (`CLI_REF` in
+`.github/workflows/ci.yml`, now `cli-v0.1.0`).
 
 ## Local development
 

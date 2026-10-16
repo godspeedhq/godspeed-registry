@@ -27,9 +27,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The godspeed-cli revision the package contract is taken from: its feature branch until that is merged,
-  # then main.
-  CLI_REF: feat/cli-foundation
+  # The godspeed-cli release the package contract (and, in the end-to-end tests, the CLI) is taken from. A
+  # tag, not a branch: the registry moves to a new CLI release by changing this line, here and in deploy.yml.
+  CLI_REF: cli-v0.1.0
   # The GodspeedOS release the end-to-end tests build services against.
   OS_REF: v0.28.0
 
