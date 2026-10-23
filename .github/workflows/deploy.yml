@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     env:
-      CLI_REF: cli-v0.1.0 # as in ci.yml
+      CLI_REF: cli-v0.4.0 # as in ci.yml
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
