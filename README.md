@@ -1,12 +1,15 @@
 # godspeed-registry
 
 The Godspeed package registry service: the server `godspeed publish` uploads to, and the signed trust metadata
-`godspeed fetch` (and, later, a Godspeed machine's package manager) verifies before keeping anything. A
+`godspeed fetch` and a Godspeed machine's package manager (GodspeedOS 0.29.0 and later) verify before
+keeping anything. A
 Cloudflare Worker in front of R2. The design - and the reasons for each part of it - is
 `docs/publishing-design.md` in [godspeed-cli](https://github.com/godspeedhq/godspeed-cli); the trust formats
 are its `docs/trust-metadata.md`.
 
-**Status: works end to end locally - publishing, publisher signatures, and the trust anchor. Not deployed.**
+**Status: deployed and in use since 2026-10-16**, at `https://godspeed-registry.bankole-422.workers.dev`:
+publishing, publisher signatures and the trust anchor. Not built yet: the custom domain for reads, and
+trusted publishing from CI (phase 2 of the design).
 
 ## What it does
 
@@ -38,8 +41,10 @@ are its `docs/trust-metadata.md`.
 - **The index write is the commit point.** Before it, nothing is visible; published files are write-once.
 - Errors are JSON, `{"error": "<code>", "message": "..."}`, with stable codes (`src/api.rs`).
 
-Reading needs none of this: in production the bucket's own domain serves `/index/`, `/packages/` and `/trust/`
-directly, so downloads - and their verification - keep working when this Worker does not.
+Reading needs none of this, and is meant not to need the Worker either: once the bucket has its custom
+domain, that domain serves `/index/`, `/packages/` and `/trust/` directly, so downloads - and their
+verification - keep working when this Worker does not. **Until then the Worker serves the reads**, so a
+Worker outage stops downloads as well as publishing.
 
 ## Layout
 
@@ -58,7 +63,7 @@ directly, so downloads - and their verification - keep working when this Worker 
 
 It depends on `godspeed-package` by path (`../godspeed-cli/crates/godspeed-package`), so check the two
 repositories out side by side, with `godspeed-cli` at the release CI uses (`CLI_REF` in
-`.github/workflows/ci.yml`, now `cli-v0.4.0`).
+`.github/workflows/ci.yml`).
 
 ## Local development
 
@@ -71,10 +76,10 @@ Both wipe `.wrangler/state`, give the local registry a trust anchor made with `g
 root 1, namespaces), put its online key in `.dev.vars`, and start `wrangler dev` with every binding local.
 Nothing reaches Cloudflare.
 
-- `local-test.sh` runs `scripts/smoke.sh`: **33 checks**, from refused tokens and signatures to a concurrent
+- `local-test.sh` runs `scripts/smoke.sh`: from refused tokens and signatures to a concurrent
   reservation race and `godspeed fetch` verifying a release through the whole chain (and refusing a root not
   the one pinned).
-- `cli-test.sh` drives the developer's side: **26 checks**, from making a token and having its fingerprint
+- `cli-test.sh` drives the developer's side: from making a token and having its fingerprint
   approved, through an unlisted signing key, to publish,
   `fetch`, a key retired (its earlier release still verifies; it signs nothing new; a new key takes over), a
   key revoked (what it signed is refused), and logout.
@@ -82,7 +87,8 @@ Nothing reaches Cloudflare.
 ## Deploying (maintainer)
 
 Deploys run in GitHub Actions (`.github/workflows/deploy.yml`), so no maintainer needs Node or wrangler on
-their own machine: only Rust, for `godspeed-trust`. Not done yet. Once, in order:
+their own machine: only Rust, for `godspeed-trust`. Steps 1 to 7 were done for the official registry
+before its first publish on 2026-10-16; step 8 is not done yet. Once, in order:
 
 1. **Offline keys**, on a machine you trust and ideally keep offline:
    `cargo run -p godspeed-trust -- keygen root-1.key` (and root-2, root-3, the namespaces keys, and one online
