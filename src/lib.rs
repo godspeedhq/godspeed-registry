@@ -7,9 +7,10 @@
 //! crate the CLI and the native package manager use, and finalises atomically through one Durable Object
 //! per package. The design is `docs/publishing-design.md` in the `godspeed-cli` repository.
 //!
-//! Reading needs none of this. `GET /index/...` and `GET /packages/...` here serve the public bucket for
-//! local development and as a fallback; in production the custom domain serves the bucket directly, so
-//! downloads keep working when this Worker does not.
+//! Reading needs none of this. `GET /trust/...`, `/index/...` and `/packages/...` here serve the public
+//! bucket. They are meant to be the fallback, with a custom domain serving the bucket directly so downloads
+//! keep working when this Worker does not; that domain does not exist yet, so today these routes are the
+//! read path, and a Worker outage stops downloads too.
 
 // Nothing here needs `unsafe`; `forbid` (unlike `deny`) cannot be switched off further in.
 #![forbid(unsafe_code)]
