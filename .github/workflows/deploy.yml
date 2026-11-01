@@ -22,7 +22,7 @@ name: deploy
 on:
   push:
     branches: [main]
-    paths-ignore: ['*.md', 'LICENSE', 'scripts/smoke.sh', 'scripts/local-test.sh', 'scripts/cli-test.sh']
+    paths-ignore: ['*.md', 'LICENSE', 'scripts/smoke.sh', 'scripts/local-test.sh', 'scripts/cli-test.sh', 'tools/docs/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:

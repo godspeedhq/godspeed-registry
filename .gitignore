@@ -5,3 +5,5 @@
 /.dev.vars
 # Offline and signing keys never belong in this repository: only their SIGNED output (trust/) does.
 *.key
+# The generated documentation site (tools/docs/build.py).
+.site/
