@@ -103,6 +103,8 @@ async fn authorise(req: &Request, env: &Env, publisher: &str) -> Result<ApiResul
     Ok(Ok(caller))
 }
 
+/// Who the bearer token authenticates as: the account, the publishers it may publish under, and when the token
+/// expires.
 async fn whoami(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let db = ctx.env.d1("DB")?;
     let outcome = async {
@@ -120,6 +122,7 @@ async fn whoami(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     respond(outcome.await)
 }
 
+/// Revoke the token this request was made with.
 async fn logout(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let db = ctx.env.d1("DB")?;
     let now = time::rfc3339(now_ms());
@@ -134,6 +137,9 @@ async fn logout(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     respond(outcome.await)
 }
 
+/// Start a publish. The caller must be allowed the namespace, and the body is the package's manifest, which must
+/// parse and name this package. The package's Durable Object then reserves the version and answers with where each
+/// file goes.
 async fn reserve(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let mut buf = String::new();
     let name = match package_name(param(&ctx, "publisher"), param(&ctx, "name"), &mut buf) {
@@ -170,6 +176,8 @@ async fn reserve(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     Response::from_json(&ReservationOut::from(&r))
 }
 
+/// Stage one file of a reservation. The name must be a file a package can contain, and the reservation decides
+/// what its bytes must be before any are read.
 async fn upload(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let mut buf = String::new();
     let name = match package_name(param(&ctx, "publisher"), param(&ctx, "name"), &mut buf) {
@@ -256,6 +264,8 @@ async fn upload(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     Response::from_json(&ReservationOut::from(&res))
 }
 
+/// Publish a reservation whose files have all arrived: the package's Durable Object makes the release visible, or
+/// answers why it cannot.
 async fn finalise(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let mut buf = String::new();
     let name = match package_name(param(&ctx, "publisher"), param(&ctx, "name"), &mut buf) {

@@ -11,6 +11,9 @@ are its `docs/trust-metadata.md`.
 publishing, publisher signatures and the trust anchor. Not built yet: the custom domain for reads, and
 trusted publishing from CI (phase 2 of the design).
 
+**Documentation: <https://godspeedhq.github.io/godspeed-registry/>**, generated from this repository by
+`tools/docs/build.py`. After a change is on main, `bash tools/docs/publish.sh` rebuilds and publishes it.
+
 ## What it does
 
     POST /v1/packages/<publisher>/<name>/reservations              body: manifest.toml
